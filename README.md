@@ -4,6 +4,10 @@ English | [简体中文](README.zh-CN.md)
 
 [Website](https://liooil.github.io/turnfold/) · [Documentation](README.md)
 
+Try the complete local-first web app at <https://liooil.github.io/turnfold/app/>. It runs without a Turnfold backend; configure a browser-reachable provider to start chatting.
+
+The provider must allow browser requests from the Pages origin. Local model servers may also require browser local-network permission and an explicit CORS/origin allowlist.
+
 Turnfold is a local-first repository for branching AI conversations.
 
 Messages are immutable content-addressed objects. A conversation is a lightweight ref to a current message, so edits and regenerated answers create alternatives instead of overwriting history. The browser renders from its local repository first and synchronizes in the background when a server identity is available.

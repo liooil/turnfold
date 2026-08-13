@@ -54,11 +54,12 @@ import {mergeMessageGraph, messageChildrenInGraph, messagePathInGraph, newestBra
 import {compactModelName} from "../lib/model-display";
 import {applyImportTitleTemplate, importFileStem, importSourceFolder} from "../lib/import-title-template";
 import {shouldOpenFullscreenEditor} from "../lib/fullscreen-editor";
+import {publicFrontendProviders} from "../lib/public-provider-catalog";
+import bundledProviderCatalog from "../providers.json";
 
 type ChatProvider = ProviderDefinition & {models: ProviderModel[]; modelDiscoveryError?: string};
 type ChatConfig = {providers: ChatProvider[]; profile: ChatProfile};
 type ServerChatConfig = ChatConfig & {identityKey: string; accountUrl?: string};
-type PublicChatConfig = {providers: ProviderDefinition[]};
 type CachedChatBootstrap = {config: ChatConfig; frontendProviders: ChatProvider[]};
 type StreamEvent = {type: string; text?: string; error?: string; metadata?: ResponseMetadata};
 type StreamRequestContext = {provider: ChatProvider; model: string; conversationId: string; generationSettings: GenerationSettings};
@@ -72,6 +73,7 @@ const basePath = __TURNFOLD_BASE_PATH__;
 const homeUrl = __TURNFOLD_HOME_URL__;
 const appUrl = (pathname: string) => `${basePath}${pathname}`;
 const mathJaxAssetPath = `${basePath}/assets/mathjax/4.1.3`;
+const builtInFrontendProviders = publicFrontendProviders(bundledProviderCatalog);
 
 const rootElement = document.querySelector<HTMLDivElement>("#app");
 if (!rootElement) throw new Error("Application root is missing");
@@ -813,7 +815,7 @@ function renderModelPicker() {
 
 function renderProviderSettings() {
   if (!state.frontendProviders.length) return "";
-  return `<section class="model-provider-settings"><div class="settings-section-heading"><strong>Provider 连接</strong><small>找不到模型时，在这里配置浏览器直连 Provider</small></div>${state.frontendProviders.map((item) => {
+  return `<section class="model-provider-settings"><div class="settings-section-heading"><strong>Provider 连接</strong><small>找不到模型时，在这里配置浏览器直连 Provider；服务需允许当前页面的 CORS 与本地网络访问</small></div>${state.frontendProviders.map((item) => {
     const configured = state.localCredentials.some((credential) => credential.providerId === item.id);
     return `<section class="local-key-entry"><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.auth.type === "none" ? item.connection.baseUrl : item.id)}</small>${item.modelDiscoveryError ? `<small class="local-key-error">${escapeHtml(item.modelDiscoveryError)}</small>` : ""}</span><div><button type="button" data-action="configure-local" data-provider="${escapeHtml(item.id)}">${item.auth.type === "none" ? "端点" : configured ? "更新" : "配置"}</button>${configured ? `<button class="dangerous" type="button" data-action="delete-local" data-provider="${escapeHtml(item.id)}">重置</button>` : ""}${item.auth.type === "none" ? `<button type="button" data-action="probe-local" data-provider="${escapeHtml(item.id)}">探测</button>` : ""}</div></section>`;
   }).join("")}</section>`;
@@ -834,8 +836,8 @@ function renderSettingsPage() {
     return items.length ? `<section class="settings-model-group"><h3>${escapeHtml(item.name)}</h3><div>${items.map(renderModelOption).join("")}</div></section>` : "";
   }).join("");
   const providerSettings = renderProviderSettings();
-  const accountHref = state.authenticated ? state.accountUrl : appUrl("/api/login");
-  const accountLabel = state.authenticated ? "管理 Backend Provider 与凭据" : "登录并配置 Backend Provider";
+  const accountHref = state.authenticated ? state.accountUrl : "";
+  const accountLabel = "管理 Backend Provider 与凭据";
   const accountLink = accountHref ? `<a class="settings-account-link" href="${escapeHtml(accountHref)}">${icons.settings}<span>${accountLabel}</span></a>` : "";
   return `<section class="settings-page" role="dialog" aria-modal="true" aria-label="设置"><header class="settings-page-header"><button type="button" data-action="close-settings" aria-label="关闭设置">${icons.close}</button><span><strong>设置</strong><small>更改会自动保存</small></span></header><div class="settings-layout"><nav class="settings-nav" aria-label="设置分类"><button type="button" data-action="scroll-settings-section" data-id="settings-models">模型</button><button type="button" data-action="scroll-settings-section" data-id="settings-generation">生成</button><button type="button" data-action="scroll-settings-section" data-id="settings-providers">Provider</button><button type="button" data-action="scroll-settings-section" data-id="settings-interface">界面</button></nav><main class="settings-content"><section class="settings-card" id="settings-models"><header><h2>模型</h2><p>选择当前会话使用的模型。</p></header><label class="settings-model-search">${icons.search}<input value="${escapeHtml(state.modelQuery)}" data-action="model-search" placeholder="搜索 Provider 或模型"></label><div class="settings-model-groups">${groups || '<p class="settings-empty">没有匹配的模型</p>'}</div></section><section class="settings-card" id="settings-generation"><header><h2>生成</h2><p>这些参数随当前会话保存。</p></header>${renderGenerationSettings()}</section><section class="settings-card" id="settings-providers"><header><h2>Provider</h2><p>管理浏览器直连端点；Backend 凭据由账户安全保存。</p></header>${providerSettings || '<p class="settings-empty">当前没有可配置的浏览器 Provider。</p>'}${accountLink}</section><section class="settings-card" id="settings-interface"><header><h2>界面</h2><p>这些选项仅保存在当前浏览器。</p></header><div class="settings-interface-options"><label class="settings-check"><input type="checkbox" data-action="advanced-actions"${state.advancedActions ? " checked" : ""}><span><strong>显示高级对话操作</strong><small>显示“需要回答”和编辑助手回答</small></span></label><label class="settings-check"><input type="checkbox" data-action="history-tree-setting"${state.historyTree ? " checked" : ""}><span><strong>树状显示聊天历史</strong><small>按会话名称中的路径组织侧栏</small></span></label></div></section></main></div></section>`;
 }
@@ -1059,8 +1061,8 @@ function setComposerFullscreen(fullscreen: boolean) {
 
 function syncIndicatorTitle() {
   if (!state.authenticated) return state.offline
-    ? "当前离线；数据安全保存在当前浏览器，联网后可登录并启用个人同步仓库"
-    : "本地模式：数据仅保存在当前浏览器；登录后可使用个人同步仓库";
+    ? "当前离线；数据安全保存在当前浏览器"
+    : "本地模式：数据仅保存在当前浏览器；后端可用时自动启用登录与同步";
   const last = state.lastFetchAt ? new Date(state.lastFetchAt).toLocaleString() : "从未完成 fetch";
   if (state.offline) return `当前离线；本地更改安全保存在浏览器中 · 上次完成：${last}`;
   if (state.syncing) return `正在 fetch · 上次完成：${last}`;
@@ -1070,7 +1072,7 @@ function syncIndicatorTitle() {
 }
 
 function syncIndicatorState() {
-  if (!state.authenticated) return {className: state.offline ? "offline" : "local", label: state.offline ? "离线 · 登录" : "本地 · 登录"};
+  if (!state.authenticated) return {className: state.offline ? "offline" : "local", label: state.offline ? "离线" : "本地"};
   if (state.offline) return {className: "offline", label: "离线"};
   if (state.syncing) return {className: "fetching", label: "同步中"};
   if (state.syncError) return {className: "error", label: "待同步"};
@@ -1084,7 +1086,7 @@ function updateSyncIndicator() {
   const visual = syncIndicatorState();
   indicator.className = `identity-sync-control ${visual.className}`;
   indicator.title = syncIndicatorTitle();
-  indicator.setAttribute("aria-label", state.authenticated ? `打开我的账户；${visual.label}` : `${visual.label}；启用个人同步`);
+  indicator.setAttribute("aria-label", state.authenticated ? `打开我的账户；${visual.label}` : `${visual.label}仓库`);
   const label = indicator.querySelector<HTMLElement>(".identity-sync-label");
   if (label) label.textContent = visual.label;
 }
@@ -1092,8 +1094,8 @@ function updateSyncIndicator() {
 function renderIdentitySyncControl(profile: ChatProfile) {
   const visual = syncIndicatorState();
   const title = syncIndicatorTitle();
-  const href = state.authenticated ? state.accountUrl : appUrl("/api/login");
-  const ariaLabel = state.authenticated ? `打开我的账户；${visual.label}` : `${visual.label}；启用个人同步`;
+  const href = state.authenticated ? state.accountUrl : "";
+  const ariaLabel = state.authenticated ? `打开我的账户；${visual.label}` : `${visual.label}仓库`;
   const identity = state.authenticated
     ? `<span class="identity-sync-avatar"><img class="header-avatar" src="${avatarPlaceholder(profile)}" alt="${escapeHtml(profile.name || profile.username)} 的头像" referrerpolicy="no-referrer"><i class="identity-sync-status" aria-hidden="true"></i></span>`
     : `<span class="identity-sync-avatar identity-sync-local" aria-hidden="true">${icons.offline}<i class="identity-sync-status"></i></span>`;
@@ -2180,9 +2182,6 @@ async function probeLocal(providerId: string) {
 }
 
 async function initializeLocalMode(clientId: string) {
-  const response = await fetch(appUrl("/api/public-config"), {cache: "no-store"});
-  const payload = await response.json() as PublicChatConfig & {error?: string};
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
   const profileId = `local:${clientId}`;
   state.authenticated = false;
   state.identityKey = profileId;
@@ -2194,7 +2193,7 @@ async function initializeLocalMode(clientId: string) {
   state.error = "";
   activateOfflineProfile(profileId);
 
-  const fallbackProviders: ChatProvider[] = payload.providers.map((item) => ({
+  const fallbackProviders: ChatProvider[] = builtInFrontendProviders.map((item) => ({
     ...item,
     models: [{id: item.defaultModel || "local-model", name: item.defaultModel || "local-model"}]
   }));
@@ -2287,7 +2286,7 @@ async function initialize() {
         rememberModel(state.providerId, state.model);
         updateConversationHash(selected.id, "replace");
         state.loading = false;
-        state.syncing = navigator.onLine;
+        state.syncing = false;
         state.offline = !navigator.onLine;
         renderApp();
         renderedLocalRepository = true;
@@ -2303,7 +2302,7 @@ async function initialize() {
         state.model = selection.model;
         state.generationSettings = state.conversation.generationSettings;
         state.loading = false;
-        state.syncing = navigator.onLine;
+        state.syncing = false;
         state.offline = !navigator.onLine;
         updateConversationHash(state.conversation.id, "replace");
         renderApp();
@@ -2312,10 +2311,16 @@ async function initialize() {
     }
   }
 
+  // The local repository is the application baseline. A server, when present,
+  // enhances this already-rendered state with identity, sync, and backend providers.
+  if (!renderedLocalRepository) {
+    await initializeLocalMode(clientId);
+    renderedLocalRepository = true;
+  }
+
   try {
     const response = await fetch(appUrl("/api/config"), {cache: "no-store", redirect: "manual"});
     if (response.type === "opaqueredirect" || response.status === 0 || response.status === 401 || response.status >= 300 && response.status < 400) {
-      await initializeLocalMode(clientId);
       return;
     }
     const payload = await response.json() as ServerChatConfig & {error?: string};
@@ -2386,15 +2391,9 @@ async function initialize() {
     renderApp();
     if (state.syncRequested) scheduleRepositorySync();
   } catch (error) {
-    if (!renderedLocalRepository && navigator.onLine) {
-      try {
-        await initializeLocalMode(clientId);
-        return;
-      } catch {}
-    }
     state.syncing = false;
     state.offline = !navigator.onLine;
-    state.syncError = error instanceof Error ? error.message : "Fetch failed";
+    state.syncError = state.authenticated ? error instanceof Error ? error.message : "Fetch failed" : "";
     if (!renderedLocalRepository) throw error;
     updateSyncIndicator();
     if (state.syncRequested && navigator.onLine) scheduleRepositorySync(1000);

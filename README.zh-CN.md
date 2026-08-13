@@ -4,6 +4,10 @@
 
 [项目主页](https://liooil.github.io/turnfold/) · [使用文档](README.zh-CN.md)
 
+可直接打开完整的本地优先 Web App：<https://liooil.github.io/turnfold/app/>。它不依赖 Turnfold 后端；配置一个浏览器可访问的 Provider 后即可开始聊天。
+
+Provider 必须允许来自 Pages 域名的浏览器请求。本地模型服务还可能需要浏览器的本地网络访问权限，以及显式的 CORS/Origin 白名单。
+
 Turnfold 是一个本地优先、用于管理分支式 AI 对话的仓库。
 
 消息是不可变的内容寻址对象。一个会话只是指向当前消息的轻量引用，因此编辑消息和重新生成回答会创建不同的后续路径，而不是覆盖历史。浏览器首先使用本地仓库完成渲染；当服务器身份可用时，再在后台进行同步。

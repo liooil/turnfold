@@ -19,6 +19,7 @@ import {identityFromHeaders, keyVaultAvailable, keyVaultFetch, type ChatIdentity
 import {discoverProviderModels, testProviderConnectivity} from "../lib/provider-connectivity";
 import {createProviderModel} from "../lib/provider-model";
 import {createServerProviderFetch} from "../lib/server-provider-fetch";
+import {publicFrontendProviders} from "../lib/public-provider-catalog";
 import type {ProviderDefinition, ProviderSecret, ResolvedBackendProvider} from "../lib/provider-types";
 import {responseMetadata} from "../lib/response-metadata";
 import type {RepositoryRefUpdate, StoredChatMessage} from "../lib/conversation-types";
@@ -123,7 +124,7 @@ async function config(request: Request) {
   try {
     const identity = identityFromHeaders(request.headers);
     if (!keyVaultAvailable()) {
-      return json({providers: publicFrontendProviders(), identityKey: identityKey(identity), profile: await accountProfile(identity), accountUrl});
+      return json({providers: configuredPublicFrontendProviders(), identityKey: identityKey(identity), profile: await accountProfile(identity), accountUrl});
     }
     const response = await keyVaultFetch("/v1/providers", identity);
     const payload = await response.json() as {providers?: ProviderDefinition[]; error?: string};
@@ -138,38 +139,14 @@ async function config(request: Request) {
   }
 }
 
-function publicFrontendProviders(): ProviderDefinition[] {
+function configuredPublicFrontendProviders(): ProviderDefinition[] {
   const definitions = JSON.parse(readFileSync(publicProviderCatalogFile, "utf8")) as Array<Record<string, unknown>>;
-  return definitions.flatMap((definition) => {
-    const connection = definition.connection as {type?: string; baseUrl?: string; proxy?: ProviderDefinition["connection"]["proxy"]} | undefined;
-    if (connection?.type !== "frontend" || typeof connection.baseUrl !== "string") return [];
-    const api = definition.api as ProviderDefinition["api"];
-    const baseUrl = connection.baseUrl.replace(/\/+$/, "");
-    const discoveryType = api === "anthropic-messages"
-      ? "anthropic-models-list"
-      : api === "google-generative-ai" ? "google-models-list" : "openai-models-list";
-    const discoveryUrl = discoveryType === "anthropic-models-list"
-      ? `${baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`}/models?limit=200`
-      : discoveryType === "google-models-list" ? `${baseUrl}/models?pageSize=200` : `${baseUrl}/models`;
-    return [{
-      id: String(definition.id || ""),
-      name: String(definition.name || definition.id || ""),
-      api,
-      connection: {type: "frontend" as const, baseUrl, proxy: connection.proxy || null},
-      auth: (definition.auth || {type: "none"}) as ProviderDefinition["auth"],
-      headers: definition.headers && typeof definition.headers === "object" ? definition.headers as Record<string, string> : {},
-      defaultModel: String(definition.defaultModel || "local-model"),
-      discovery: {type: discoveryType, url: discoveryUrl},
-      builtin: true,
-      credentialState: "local" as const,
-      credentials: []
-    }];
-  });
+  return publicFrontendProviders(definitions);
 }
 
 function publicConfig() {
   try {
-    return json({providers: publicFrontendProviders()});
+    return json({providers: configuredPublicFrontendProviders()});
   } catch (error) {
     return json({error: error instanceof Error ? error.message : "Public Provider configuration unavailable"}, 503);
   }
