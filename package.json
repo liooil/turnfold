@@ -2,7 +2,7 @@
   "name": "turnfold",
   "version": "0.1.0",
   "description": "A local-first repository for branching AI conversations.",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/liooil/turnfold.git"

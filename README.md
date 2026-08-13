@@ -1,5 +1,7 @@
 # Turnfold
 
+English | [简体中文](README.zh-CN.md)
+
 Turnfold is a local-first repository for branching AI conversations.
 
 Messages are immutable content-addressed objects. A conversation is a lightweight ref to a current message, so edits and regenerated answers create alternatives instead of overwriting history. The browser renders from its local repository first and synchronizes in the background when a server identity is available.
@@ -100,4 +102,4 @@ Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.m
 
 ## License
 
-Turnfold is licensed under the GNU Affero General Public License v3.0 only. See [LICENSE](LICENSE).
+Turnfold is licensed under the MIT License. See [LICENSE](LICENSE).
