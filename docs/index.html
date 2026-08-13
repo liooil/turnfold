@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Turnfold — 本地优先、支持分支式历史的 AI 对话仓库。">
+  <meta name="theme-color" content="#171713">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Turnfold">
+  <meta property="og:description" content="A local-first repository for branching AI conversations.">
+  <meta property="og:url" content="https://liooil.github.io/turnfold/">
+  <title>Turnfold — 本地优先的 AI 对话仓库</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="Turnfold home">
+      <img src="favicon.svg" alt="" width="36" height="36">
+      <span>Turnfold</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#features"><span data-lang="zh">特性</span><span data-lang="en">Features</span></a>
+      <a href="#start"><span data-lang="zh">开始使用</span><span data-lang="en">Get started</span></a>
+      <a href="https://github.com/liooil/turnfold">GitHub</a>
+      <div class="language" role="group" aria-label="Language">
+        <button type="button" data-set-lang="zh" aria-pressed="true">中</button>
+        <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">
+          <span data-lang="zh">对话是一段历史，而不只是一条列表</span>
+          <span data-lang="en">Conversation is history, not just a list</span>
+        </p>
+        <h1>
+          <span data-lang="zh">让每一次转折<br>都有迹可循。</span>
+          <span data-lang="en">Keep every turn.<br>Follow every fold.</span>
+        </h1>
+        <p class="lead">
+          <span data-lang="zh">Turnfold 是本地优先的 AI 对话仓库。编辑与重新生成不会覆盖过去，而会形成可导航的分支式消息历史。</span>
+          <span data-lang="en">Turnfold is a local-first repository for AI conversations. Edits and regenerations preserve the past as navigable branches instead of overwriting it.</span>
+        </p>
+        <div class="hero-actions">
+          <a class="button primary" href="#start">
+            <span data-lang="zh">本地运行</span><span data-lang="en">Run locally</span>
+          </a>
+          <a class="button secondary" href="https://github.com/liooil/turnfold">
+            <span data-lang="zh">查看源码</span><span data-lang="en">View source</span>
+          </a>
+        </div>
+        <p class="license">MIT · TypeScript · Bun · SQLite · PWA</p>
+      </div>
+
+      <div class="history-card" aria-label="Branching conversation illustration">
+        <div class="card-top"><span></span><span></span><span></span><b>conversation/main</b></div>
+        <div class="message root">
+          <span class="role">YOU</span>
+          <p data-lang="zh">解释一下这个设计。</p><p data-lang="en">Explain this design.</p>
+        </div>
+        <div class="connector main-line"></div>
+        <div class="message answer">
+          <span class="role">AI</span>
+          <p data-lang="zh">消息不可变，会话只记录当前位置。</p><p data-lang="en">Messages are immutable; a conversation records where you are.</p>
+        </div>
+        <div class="fork" aria-hidden="true"><i></i><i></i></div>
+        <div class="alternatives">
+          <div class="message compact active">
+            <span class="ref">main</span>
+            <p data-lang="zh">继续深入</p><p data-lang="en">Go deeper</p>
+          </div>
+          <div class="message compact">
+            <span class="ref">alternative</span>
+            <p data-lang="zh">换个方向</p><p data-lang="en">Try another way</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="principle" aria-label="Core principle">
+      <p data-lang="zh">本地先渲染，后台再同步。网络中断不会让对话消失，刷新页面也不必等待服务器才能看到历史。</p>
+      <p data-lang="en">Render locally, synchronize later. A broken connection does not erase the conversation, and a refresh does not wait for the server to show history.</p>
+    </section>
+
+    <section class="features" id="features">
+      <div class="section-heading">
+        <p class="eyebrow"><span data-lang="zh">核心特性</span><span data-lang="en">What matters</span></p>
+        <h2><span data-lang="zh">为可塑的对话而设计</span><span data-lang="en">Built for conversations that evolve</span></h2>
+      </div>
+      <div class="feature-grid">
+        <article>
+          <span class="number">01</span>
+          <h3><span data-lang="zh">本地优先</span><span data-lang="en">Local first</span></h3>
+          <p><span data-lang="zh">IndexedDB 保存消息、引用、草稿和待同步操作；无需服务器返回即可渲染。</span><span data-lang="en">IndexedDB holds messages, refs, drafts, and pending operations, ready to render without a server round trip.</span></p>
+        </article>
+        <article>
+          <span class="number">02</span>
+          <h3><span data-lang="zh">保留分支</span><span data-lang="en">Preserved branches</span></h3>
+          <p><span data-lang="zh">消息是不可变对象。编辑、重试和回复旧消息都会保留来源与替代路径。</span><span data-lang="en">Messages are immutable objects. Edits, retries, and replies to older messages retain their origin and alternatives.</span></p>
+        </article>
+        <article>
+          <span class="number">03</span>
+          <h3><span data-lang="zh">模型自由</span><span data-lang="en">Model freedom</span></h3>
+          <p><span data-lang="zh">连接 OpenAI、Anthropic、Google、Ollama、LM Studio、llama.cpp、vLLM 及兼容端点。</span><span data-lang="en">Connect OpenAI, Anthropic, Google, Ollama, LM Studio, llama.cpp, vLLM, and compatible endpoints.</span></p>
+        </article>
+        <article>
+          <span class="number">04</span>
+          <h3><span data-lang="zh">数据可迁移</span><span data-lang="en">Portable data</span></h3>
+          <p><span data-lang="zh">导入导出原生归档，以及 Codex CLI、Claude Code 与 OMP JSONL 会话。</span><span data-lang="en">Import and export native archives plus Codex CLI, Claude Code, and OMP JSONL sessions.</span></p>
+        </article>
+      </div>
+    </section>
+
+    <section class="start" id="start">
+      <div>
+        <p class="eyebrow"><span data-lang="zh">一分钟启动</span><span data-lang="en">Start in a minute</span></p>
+        <h2><span data-lang="zh">把仓库留在自己手里</span><span data-lang="en">Keep the repository yours</span></h2>
+        <p><span data-lang="zh">需要 Docker Compose，以及浏览器所在设备上可访问的 Ollama、LM Studio 或其他模型服务。</span><span data-lang="en">You need Docker Compose and an Ollama, LM Studio, or other model endpoint reachable by your browser.</span></p>
+      </div>
+      <div class="terminal">
+        <div class="terminal-bar"><span></span><span></span><span></span><button type="button" id="copy-command"><span data-lang="zh">复制</span><span data-lang="en">Copy</span></button></div>
+        <pre><code id="quick-command">git clone https://github.com/liooil/turnfold.git
+cd turnfold
+docker compose up --build -d</code></pre>
+        <p>→ http://localhost:3000</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="brand"><img src="favicon.svg" alt="" width="30" height="30"><span>Turnfold</span></div>
+    <p><span data-lang="zh">以 MIT License 开源。</span><span data-lang="en">Open source under the MIT License.</span></p>
+    <div><a href="https://github.com/liooil/turnfold/blob/main/README.zh-CN.md">Docs</a><a href="https://github.com/liooil/turnfold/issues">Issues</a><a href="https://github.com/liooil/turnfold">GitHub</a></div>
+  </footer>
+</body>
+</html>

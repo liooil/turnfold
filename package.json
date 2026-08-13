@@ -10,7 +10,7 @@
   "bugs": {
     "url": "https://github.com/liooil/turnfold/issues"
   },
-  "homepage": "https://github.com/liooil/turnfold#readme",
+  "homepage": "https://liooil.github.io/turnfold/",
   "scripts": {
     "dev": "bun --hot src/server.ts",
     "typecheck": "tsc --noEmit",
