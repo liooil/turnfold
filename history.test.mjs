@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {mkdtempSync, rmSync} from "node:fs";
 import http from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
@@ -11,8 +11,6 @@ import {createMessageObject} from "./lib/message-object.ts";
 const root = process.cwd();
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), "turnfold-history-test-"));
 const databasePath = path.join(temporaryDirectory, "chat.db");
-const tokenPath = path.join(temporaryDirectory, "service-token");
-writeFileSync(tokenPath, "history-test-token");
 
 const legacyDatabase = new Database(databasePath, {create: true});
 legacyDatabase.run(`
@@ -69,10 +67,7 @@ async function startServer() {
       STATIC_ROOT: path.join(root, "dist"),
       CHAT_DATABASE_PATH: databasePath,
       BASE_PATH: "/chat",
-      AUTH_ISSUER: "turnfold:test",
-      PUBLIC_PROVIDER_CATALOG_FILE: path.join(root, "providers.json"),
-      KEY_VAULT_URL: "http://127.0.0.1:1",
-      KEY_VAULT_TOKEN_FILE: tokenPath
+      AUTH_ISSUER: "turnfold:test"
     },
     stdio: "ignore"
   });
@@ -106,18 +101,21 @@ const owner = {username: "history-owner", sub: "owner-sub"};
 const other = {username: "history-other", sub: "other-sub"};
 const legacyOwner = {username: "history-legacy", sub: "legacy-sub"};
 const distributedOwner = {username: "distributed-owner", sub: "distributed-sub"};
+const longHistoryOwner = {username: "long-history-owner", sub: "long-history-sub"};
 const localRepositoryOwner = {username: "local-repository-owner", sub: "local-repository-sub"};
 const untitledOwner = {username: "untitled-owner", sub: "untitled-sub"};
 let server;
 try {
   server = await startServer();
   const publicConfigResponse = await fetch(`${server.origin}/chat/api/public-config`);
-  assert.equal(publicConfigResponse.status, 200);
-  const publicConfig = await publicConfigResponse.json();
-  assert.ok(publicConfig.providers.length > 0);
-  assert.ok(publicConfig.providers.every((provider) => provider.connection.type === "frontend" && provider.credentials.length === 0));
+  assert.equal(publicConfigResponse.status, 404);
   const anonymousPrivateConfig = await fetch(`${server.origin}/chat/api/config`);
   assert.equal(anonymousPrivateConfig.status, 401);
+  const privateConfig = await api(server.origin, owner, "/api/config");
+  assert.equal(privateConfig.response.status, 200);
+  assert.equal("providers" in privateConfig.payload, false);
+  const removedChatRoute = await api(server.origin, owner, "/api/chat", {method: "POST", body: "{}"});
+  assert.equal(removedChatRoute.response.status, 404);
   const migratedLegacy = await api(server.origin, legacyOwner, "/api/conversations/legacy-conversation");
   assert.equal(migratedLegacy.response.status, 200);
   assert.equal(migratedLegacy.payload.conversation.name, "legacy/chat");
@@ -277,6 +275,47 @@ try {
     body: JSON.stringify({haveObjectIds: []})
   });
   assert.deepEqual(new Set(graphFetch.payload.objects.map((message) => message.id)), new Set([distributedMessage.id, alternateMessage.id]));
+
+  const longHistoryNamespace = createHash("sha256").update(`turnfold:test\0${longHistoryOwner.sub}`).digest("hex").slice(0, 32);
+  const longHistoryObjects = [];
+  let longHistoryParentId = null;
+  for (let index = 0; index < 501; index += 1) {
+    const message = await createMessageObject({
+      parentMessageId: longHistoryParentId,
+      role: index % 2 ? "assistant" : "user",
+      parts: [{type: "text", text: `long history ${index}`}],
+      origin: {type: "legacy"},
+      completion: {status: "complete"},
+      createdAt: new Date(Date.parse(objectTimestamp) + index).toISOString(),
+      completedAt: new Date(Date.parse(objectTimestamp) + index).toISOString()
+    }, longHistoryNamespace);
+    longHistoryObjects.push(message);
+    longHistoryParentId = message.id;
+  }
+  const longHistoryPush = await api(server.origin, longHistoryOwner, "/api/sync/push", {
+    method: "POST",
+    body: JSON.stringify({
+      objects: longHistoryObjects,
+      refs: [{
+        conversationId: "long-history-conversation",
+        expectedHeadMessageId: null,
+        expectedHeadVersion: 0,
+        expectedMetadataVersion: 0,
+        headMessageId: longHistoryParentId,
+        name: "long history",
+        providerId: "openai",
+        model: "gpt-test",
+        generationSettings: initialSettings,
+        createdAt: objectTimestamp,
+        updatedAt: objectTimestamp
+      }]
+    })
+  });
+  assert.equal(longHistoryPush.response.status, 200);
+  const longHistory = await api(server.origin, longHistoryOwner, "/api/conversations/long-history-conversation");
+  assert.equal(longHistory.response.status, 200);
+  assert.equal(longHistory.payload.conversation.messages.length, 501);
+
   const localRepositoryId = "local:12345678-1234-4234-8234-123456789abc";
   const localRepositoryMessage = await createMessageObject({
     parentMessageId: null,

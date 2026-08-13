@@ -1,4 +1,5 @@
 import type {Conversation, ConversationRefState, ConversationSummary, RepositoryFetch, RepositoryRefUpdate, StoredChatMessage, WorkingItem} from "./conversation-types";
+import {normalizeGenerationSettings} from "./generation-settings";
 
 // Keep the original database identifiers so existing installations upgrade without losing local history.
 const databaseName = "xiteng-chat-offline";
@@ -262,6 +263,35 @@ export async function loadCachedConversationSummaries() {
   return (profile?.summaries || []).map((summary) => normalizedConversationSummary(summary)).filter((summary): summary is ConversationSummary => Boolean(summary));
 }
 
+export async function listCachedConversationRefs() {
+  const profileId = activeProfileId();
+  if (!profileId) return [] as Array<Omit<Conversation, "messages">>;
+  const records = await transaction<CachedConversationRef[]>("conversations", "readonly", (store) => store.index("profileId").getAll(profileId));
+  const refs: Array<Omit<Conversation, "messages">> = [];
+  for (const record of records) {
+    const {cacheKey: _cacheKey, profileId: _profileId, messages: legacyMessages, ...conversation} = record;
+    const summary = normalizedConversationSummary(conversation as Partial<ConversationSummary> & {title?: unknown});
+    if (!summary) continue;
+    const ref: Omit<Conversation, "messages"> = {
+      ...summary,
+      generationSettings: normalizeGenerationSettings(conversation.generationSettings)
+    };
+    if (!legacyMessages) {
+      refs.push(ref);
+      continue;
+    }
+    const normalized: Conversation = {
+      ...ref,
+      headMessageId: ref.headMessageId || legacyMessages.at(-1)?.id || null,
+      messages: legacyMessages.map((message, index) => normalizedCachedMessage(message, index ? legacyMessages[index - 1].id : null, ref.updatedAt))
+    };
+    await cacheConversation(normalized);
+    const {messages: _messages, ...migratedRef} = normalized;
+    refs.push(migratedRef);
+  }
+  return refs.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
 export async function cacheConversation(conversation: Conversation) {
   const profileId = activeProfileId();
   if (!profileId) return;
@@ -317,7 +347,7 @@ export async function loadCachedConversation(id: string) {
   const seen = new Set<string>();
   let messageId = conversation.headMessageId;
   while (messageId) {
-    if (seen.has(messageId) || reversed.length >= 500) return null;
+    if (seen.has(messageId)) return null;
     seen.add(messageId);
     const message = await loadCachedMessage(profileId, messageId);
     if (!message) return null;
@@ -698,7 +728,7 @@ async function messagePathFromCache(profileId: string, headMessageId: string | n
   const seen = new Set<string>();
   let id = headMessageId;
   while (id) {
-    if (seen.has(id) || reversed.length >= 500) throw new Error("Local object history is cyclic or too long");
+    if (seen.has(id)) throw new Error("Local object history is cyclic");
     seen.add(id);
     const object = await loadCachedMessage(profileId, id);
     if (!object) throw new Error(`Local object ${id} is unavailable`);

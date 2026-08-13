@@ -9,7 +9,7 @@ export function messagePathInGraph(messages: Map<string, StoredChatMessage>, hea
   const seen = new Set<string>();
   let cursor = headMessageId;
   while (cursor) {
-    if (seen.has(cursor) || reversed.length >= 500) return [];
+    if (seen.has(cursor)) return [];
     seen.add(cursor);
     const message = messages.get(cursor);
     if (!message) return [];

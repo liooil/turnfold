@@ -13,7 +13,6 @@ services:
       SINGLE_USER_NAME: local
       BASE_PATH: /
       CHAT_DATABASE_PATH: /data/turnfold.db
-      PUBLIC_PROVIDER_CATALOG_FILE: /app/providers.json
     volumes:
       - turnfold-data:/data
     security_opt:

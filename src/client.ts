@@ -1,8 +1,6 @@
 import DOMPurify from "dompurify";
 import {unzip} from "fflate";
 import {marked} from "marked";
-import {applyBrowserProviderSettings} from "../lib/browser-provider-settings";
-import {createBrowserProviderFetch} from "../lib/browser-provider-fetch";
 import {
   commitConversationMessage,
   createConversationHistory,
@@ -21,6 +19,7 @@ import {
   activateOfflineProfile,
   cachedLastFetchAt,
   cacheChatConfig,
+  listCachedConversationRefs,
   listCachedMessages,
   listWorkingItems,
   loadCachedChatConfig,
@@ -30,13 +29,18 @@ import {
 } from "../lib/offline-history";
 import {
   deleteLocalCredential,
-  getLocalCredential,
+  deleteLocalProviderProfile,
   listLocalCredentials,
+  listLocalProviderProfiles,
+  migrateLegacyProviderProfile,
   saveLocalCredential,
+  saveLocalProviderProfile,
   type LocalCredential
-} from "../lib/local-credentials";
+} from "../lib/local-providers";
 import type {ChatProfile} from "../lib/profile-types";
-import type {ProviderDefinition, ProviderModel, ProviderSecret} from "../lib/provider-types";
+import {availableProviderPresetModels, getProviderPreset, isProviderPreset, providerPresets} from "../lib/provider-presets";
+import {discoverProviderModels, streamProvider} from "../lib/provider-runtime";
+import type {ProviderModel, ProviderProfile, ProviderProtocol} from "../lib/provider-types";
 import {responseMetadata} from "../lib/response-metadata";
 import {createMessageObject} from "../lib/message-object";
 import {
@@ -54,13 +58,11 @@ import {mergeMessageGraph, messageChildrenInGraph, messagePathInGraph, newestBra
 import {compactModelName} from "../lib/model-display";
 import {applyImportTitleTemplate, importFileStem, importSourceFolder} from "../lib/import-title-template";
 import {shouldOpenFullscreenEditor} from "../lib/fullscreen-editor";
-import {publicFrontendProviders} from "../lib/public-provider-catalog";
-import bundledProviderCatalog from "../providers.json";
 
-type ChatProvider = ProviderDefinition & {models: ProviderModel[]; modelDiscoveryError?: string};
+type ChatProvider = ProviderProfile & {modelDiscoveryError?: string};
 type ChatConfig = {providers: ChatProvider[]; profile: ChatProfile};
-type ServerChatConfig = ChatConfig & {identityKey: string; accountUrl?: string};
-type CachedChatBootstrap = {config: ChatConfig; frontendProviders: ChatProvider[]};
+type ServerChatConfig = {identityKey: string; profile: ChatProfile; capabilities?: {sync?: boolean}};
+type CachedChatBootstrap = {profile?: ChatProfile; config?: ChatConfig; frontendProviders?: unknown[]};
 type StreamEvent = {type: string; text?: string; error?: string; metadata?: ResponseMetadata};
 type StreamRequestContext = {provider: ChatProvider; model: string; conversationId: string; generationSettings: GenerationSettings};
 type HashNavigationMode = "push" | "replace" | "none";
@@ -73,7 +75,6 @@ const basePath = __TURNFOLD_BASE_PATH__;
 const homeUrl = __TURNFOLD_HOME_URL__;
 const appUrl = (pathname: string) => `${basePath}${pathname}`;
 const mathJaxAssetPath = `${basePath}/assets/mathjax/4.1.3`;
-const builtInFrontendProviders = publicFrontendProviders(bundledProviderCatalog);
 
 const rootElement = document.querySelector<HTMLDivElement>("#app");
 if (!rootElement) throw new Error("Application root is missing");
@@ -100,8 +101,6 @@ migrateLegacyPreferences();
 
 const state = {
   config: null as ChatConfig | null,
-  accountUrl: "",
-  frontendProviders: [] as ChatProvider[],
   localCredentials: [] as LocalCredential[],
   conversations: [] as ConversationSummary[],
   conversation: null as Conversation | null,
@@ -139,7 +138,12 @@ const state = {
   importStatus: "",
   importTitleTemplate: window.localStorage.getItem("turnfold-import-title-template") || "{title}",
   composerFullscreen: false,
-  settingsOpen: false
+  settingsOpen: false,
+  providerEditorOpen: false,
+  providerEditorId: "",
+  providerModelEditorOpen: false,
+  providerModelProviderId: "",
+  providerModelPresetId: ""
 };
 const titleGenerationConversationIds = new Set<string>();
 
@@ -165,6 +169,7 @@ const icons = Object.fromEntries(Object.entries({
   offline: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M8 8a9 9 0 0 1 12 2M5 12a9 9 0 0 1 2-2m3 6a3 3 0 0 1 4-1m-2 5h.01"/></svg>',
   transfer: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M5 17v3h14v-3"/></svg>',
   upload: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M5 17v3h14v-3"/></svg>',
+  stash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0-4-4m4 4 4-4"/><path d="M5 16v3h14v-3"/></svg>',
   expand: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg>',
   collapse: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/></svg>'
 }).map(([name, markup]) => [name, markup.replace("<svg ", '<svg class="ui-icon" ')])) as Record<string, string>;
@@ -230,8 +235,7 @@ function exportFilename(name: string, suffix: string) {
 
 async function exportSessions(format: SessionTransferFormat) {
   if (format === "turnfold") {
-    const conversations = await Promise.all(state.conversations.map((summary) => getConversationHistory(summary.id)));
-    const [objects, workingItems] = await Promise.all([listCachedMessages(), listWorkingItems()]);
+    const [conversations, objects, workingItems] = await Promise.all([listCachedConversationRefs(), listCachedMessages(), listWorkingItems()]);
     downloadText(exportFilename("turnfold-backup", "turnfold.json"), serializeTurnfoldArchive(conversations, objects, workingItems), "application/json");
     return;
   }
@@ -790,7 +794,7 @@ function renderModelOption(choice: ModelChoice) {
   const detail = displayName === choice.model.id
     ? choice.provider.name
     : `${choice.model.id} · ${choice.provider.name}`;
-  return `<button class="model-option${active ? " active" : ""}" type="button" data-action="choose-model" data-provider="${escapeHtml(choice.provider.id)}" data-model="${escapeHtml(choice.model.id)}"><span><strong>${escapeHtml(displayName)}</strong><small title="${escapeHtml(choice.model.id)}">${escapeHtml(detail)}</small></span><small>${choice.provider.connection.type === "frontend" ? "Frontend" : "Backend"}</small></button>`;
+  return `<button class="model-option${active ? " active" : ""}" type="button" data-action="choose-model" data-provider="${escapeHtml(choice.provider.id)}" data-model="${escapeHtml(choice.model.id)}"><span><strong>${escapeHtml(displayName)}</strong><small title="${escapeHtml(choice.model.id)}">${escapeHtml(detail)}</small></span><small>${escapeHtml(providerProtocolLabel(choice.provider.protocol))}</small></button>`;
 }
 
 function quickModelChoices(choices: ModelChoice[]) {
@@ -807,18 +811,58 @@ function quickModelChoices(choices: ModelChoice[]) {
 
 function renderModelPicker() {
   const active = provider();
-  if (!active || !state.config) return "";
+  if (!active || !state.config) return `<button class="model-picker-empty" type="button" data-action="open-provider-settings">${state.config?.providers.length ? "选择 Provider" : "配置 Provider"}</button>`;
   const activeModelName = compactModelName(active.models.find((model) => model.id === state.model)?.name || state.model);
   const choices = quickModelChoices(availableModelChoices());
   return `<details class="model-picker"><summary aria-label="模型和 Effort"><span class="picker-label">${escapeHtml(activeModelName)}</span><span class="picker-icons"><i class="picker-chevron">${icons.down}</i></span></summary><div class="model-menu"><section class="quick-models"><div class="quick-config-heading"><strong>模型</strong><small>当前与最近使用</small></div><div class="quick-model-list">${choices.map(renderModelOption).join("")}</div></section>${renderEffortControl("quick-effort")}<button class="open-settings-button" type="button" data-action="open-settings">${icons.settings}<span><strong>打开全部设置</strong><small>模型、生成参数与 Provider</small></span></button></div></details>`;
 }
 
+function providerProtocolLabel(protocol: ProviderProtocol) {
+  if (protocol === "openai-chat") return "OpenAI Chat";
+  if (protocol === "openai-responses") return "OpenAI Responses";
+  if (protocol === "anthropic") return "Anthropic";
+  return "Google";
+}
+
+function option(value: string, label: string, selected: string) {
+  return `<option value="${value}"${value === selected ? " selected" : ""}>${label}</option>`;
+}
+
+function renderProviderEditor() {
+  if (!state.providerEditorOpen) return "";
+  const existing = state.config?.providers.find((item) => item.id === state.providerEditorId);
+  const preset = getProviderPreset(state.providerEditorId);
+  const template = existing || preset;
+  const credential = existing ? localCredential(existing.id) : null;
+  const protocol = template?.protocol || "openai-chat";
+  const authType = template?.auth.type || "none";
+  const editorTitle = preset ? `${existing ? "编辑" : "启用"}预置 Provider` : existing ? "编辑自定义 Provider" : "添加自定义 Provider";
+  const editorHint = preset ? "保存一份本地覆盖后才会启用；预置本身不会被修改" : "配置只保存在当前浏览器";
+  return `<form class="provider-editor" data-provider-form><header><div><strong>${editorTitle}</strong><small>${editorHint}</small></div><button type="button" data-action="cancel-provider-edit" aria-label="关闭 Provider 编辑器">${icons.close}</button></header><div class="provider-editor-grid"><label><span>标识</span><input name="provider-id" value="${escapeHtml(template?.id || "")}"${template ? " readonly" : ""} required maxlength="80" placeholder="例如 my-provider" pattern="[a-z0-9][a-z0-9._-]*"></label><label><span>名称</span><input name="provider-name" value="${escapeHtml(template?.name || "")}" required maxlength="120" placeholder="我的模型服务"></label><label><span>协议</span><select name="provider-protocol">${option("openai-chat", "OpenAI Chat Completions", protocol)}${option("openai-responses", "OpenAI Responses", protocol)}${option("anthropic", "Anthropic Messages", protocol)}${option("google", "Google Generative AI", protocol)}</select></label><label><span>认证</span><select name="provider-auth">${option("none", "无认证", authType)}${option("bearer", "Bearer Token", authType)}${option("header", "自定义 Header", authType)}</select></label><label class="provider-editor-wide"><span>Base URL</span><input name="provider-base-url" type="url" value="${escapeHtml(template?.baseUrl || "")}" required placeholder="https://example.com/v1"></label><label><span>认证 Header</span><input name="provider-auth-header" value="${escapeHtml(template?.auth.header || "")}" placeholder="x-api-key"></label><label><span>API Key</span><input name="provider-api-key" type="password" autocomplete="off" placeholder="${credential?.secret.apiKey ? "已配置；留空则保持不变" : "没有则留空"}"></label><label class="provider-editor-wide"><span>模型发现 URL</span><input name="provider-discovery-url" type="url" value="${escapeHtml(template?.discoveryUrl || "")}" placeholder="留空时根据 Base URL 推导"></label><label class="provider-editor-wide"><span>默认 / 手动模型 ID</span><input name="provider-default-model" value="${escapeHtml(template?.defaultModel || "")}" placeholder="例如 model-name"></label><label class="provider-editor-wide"><span>附加 Headers（JSON）</span><textarea name="provider-headers" rows="3" spellcheck="false" placeholder="{}">${escapeHtml(JSON.stringify(template?.headers || {}, null, 2))}</textarea></label></div><footer><button type="button" data-action="cancel-provider-edit">取消</button><button class="provider-save-button" type="submit">${preset && !existing ? "保存覆盖并启用" : "保存"}</button></footer></form>`;
+}
+
+function renderProviderModelEditor() {
+  if (!state.providerModelEditorOpen) return "";
+  const provider = state.config?.providers.find((item) => item.id === state.providerModelProviderId);
+  if (!provider) return "";
+  const availablePresets = availableProviderPresetModels(provider);
+  const selectedPreset = availablePresets.find((model) => model.id === state.providerModelPresetId);
+  const presetOptions = availablePresets.map((model) => `<button type="button" class="provider-model-preset${model.id === selectedPreset?.id ? " selected" : ""}" data-action="select-provider-model-preset" data-model="${escapeHtml(model.id)}"><strong>${escapeHtml(model.name)}</strong><small>${escapeHtml(model.id)}</small></button>`).join("");
+  return `<form class="provider-editor provider-model-editor" data-provider-model-form><header><div><strong>添加模型 · ${escapeHtml(provider.name)}</strong><small>选择预置模型作为模板，或手动填写模型</small></div><button type="button" data-action="cancel-provider-model-edit" aria-label="关闭模型编辑器">${icons.close}</button></header><section class="provider-model-presets"><div><strong>未覆盖的预置模型</strong><small>同 ID 的本地或已发现模型会从这里隐藏</small></div><div>${presetOptions || '<p class="settings-empty">没有未覆盖的预置模型。</p>'}</div></section><div class="provider-editor-grid"><label><span>模型 ID</span><input name="provider-model-id" value="${escapeHtml(selectedPreset?.id || "")}"${selectedPreset ? " readonly" : ""} required maxlength="300" placeholder="例如 model-name"></label><label><span>显示名称</span><input name="provider-model-name" value="${escapeHtml(selectedPreset?.name || "")}" maxlength="300" placeholder="留空时使用模型 ID"></label></div><footer><button type="button" data-action="cancel-provider-model-edit">取消</button><button class="provider-save-button" type="submit">${selectedPreset ? "添加本地覆盖" : "添加模型"}</button></footer></form>`;
+}
+
 function renderProviderSettings() {
-  if (!state.frontendProviders.length) return "";
-  return `<section class="model-provider-settings"><div class="settings-section-heading"><strong>Provider 连接</strong><small>找不到模型时，在这里配置浏览器直连 Provider；服务需允许当前页面的 CORS 与本地网络访问</small></div>${state.frontendProviders.map((item) => {
-    const configured = state.localCredentials.some((credential) => credential.providerId === item.id);
-    return `<section class="local-key-entry"><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.auth.type === "none" ? item.connection.baseUrl : item.id)}</small>${item.modelDiscoveryError ? `<small class="local-key-error">${escapeHtml(item.modelDiscoveryError)}</small>` : ""}</span><div><button type="button" data-action="configure-local" data-provider="${escapeHtml(item.id)}">${item.auth.type === "none" ? "端点" : configured ? "更新" : "配置"}</button>${configured ? `<button class="dangerous" type="button" data-action="delete-local" data-provider="${escapeHtml(item.id)}">重置</button>` : ""}${item.auth.type === "none" ? `<button type="button" data-action="probe-local" data-provider="${escapeHtml(item.id)}">探测</button>` : ""}</div></section>`;
-  }).join("")}</section>`;
+  const providers = state.config?.providers || [];
+  const rows = providers.map((item) => {
+    const configured = item.auth.type === "none" || state.localCredentials.some((credential) => credential.providerId === item.id);
+    const modelSummary = item.models.length ? `${item.models.length} 个模型` : "尚无模型";
+    const presetOverride = isProviderPreset(item.id);
+    return `<section class="local-key-entry"><span><strong>${escapeHtml(item.name)}<em class="provider-kind">${presetOverride ? "预置覆盖" : "自定义"}</em></strong><small>${escapeHtml(providerProtocolLabel(item.protocol))} · ${escapeHtml(item.baseUrl)} · ${modelSummary}${configured ? "" : " · 缺少凭据"}</small>${item.modelDiscoveryError ? `<small class="local-key-error">${escapeHtml(item.modelDiscoveryError)}</small>` : ""}</span><div><button type="button" data-action="add-provider-model" data-provider="${escapeHtml(item.id)}">添加模型</button><button type="button" data-action="probe-provider" data-provider="${escapeHtml(item.id)}">刷新模型</button><button type="button" data-action="edit-provider" data-provider="${escapeHtml(item.id)}">编辑</button><button class="dangerous" type="button" data-action="delete-provider" data-provider="${escapeHtml(item.id)}">${presetOverride ? "禁用" : "删除"}</button></div></section>`;
+  }).join("");
+  const disabledPresets = providerPresets.filter((preset) => !providers.some((item) => item.id === preset.id));
+  const presetRows = disabledPresets.map((preset) => `<section class="local-key-entry provider-preset-entry"><span><strong>${escapeHtml(preset.name)}</strong><small>${escapeHtml(preset.id)} · ${escapeHtml(providerProtocolLabel(preset.protocol))} · 默认禁用</small></span><div><button type="button" data-action="enable-provider-preset" data-provider="${escapeHtml(preset.id)}">覆盖并启用</button></div></section>`).join("");
+  const catalog = `<details class="provider-preset-catalog"${providers.length ? "" : " open"}><summary><span><strong>可用预置</strong><small>来自 KeyVault，并参考 OMP；全部默认禁用</small></span><em>${disabledPresets.length}</em></summary><div>${presetRows || '<p class="settings-empty">所有预置均已启用。</p>'}</div></details>`;
+  return `<section class="model-provider-settings"><div class="settings-section-heading provider-settings-heading"><span><strong>已启用</strong><small>本地覆盖和自定义 Provider；端点与凭据只保存在当前浏览器</small></span><button type="button" data-action="add-provider">${icons.plus}自定义</button></div>${rows || '<p class="settings-empty">尚未启用 Provider。历史记录仍然可以正常浏览。</p>'}${renderProviderEditor()}${renderProviderModelEditor()}${catalog}</section>`;
 }
 
 function renderGenerationSettings() {
@@ -836,10 +880,7 @@ function renderSettingsPage() {
     return items.length ? `<section class="settings-model-group"><h3>${escapeHtml(item.name)}</h3><div>${items.map(renderModelOption).join("")}</div></section>` : "";
   }).join("");
   const providerSettings = renderProviderSettings();
-  const accountHref = state.authenticated ? state.accountUrl : "";
-  const accountLabel = "管理 Backend Provider 与凭据";
-  const accountLink = accountHref ? `<a class="settings-account-link" href="${escapeHtml(accountHref)}">${icons.settings}<span>${accountLabel}</span></a>` : "";
-  return `<section class="settings-page" role="dialog" aria-modal="true" aria-label="设置"><header class="settings-page-header"><button type="button" data-action="close-settings" aria-label="关闭设置">${icons.close}</button><span><strong>设置</strong><small>更改会自动保存</small></span></header><div class="settings-layout"><nav class="settings-nav" aria-label="设置分类"><button type="button" data-action="scroll-settings-section" data-id="settings-models">模型</button><button type="button" data-action="scroll-settings-section" data-id="settings-generation">生成</button><button type="button" data-action="scroll-settings-section" data-id="settings-providers">Provider</button><button type="button" data-action="scroll-settings-section" data-id="settings-interface">界面</button></nav><main class="settings-content"><section class="settings-card" id="settings-models"><header><h2>模型</h2><p>选择当前会话使用的模型。</p></header><label class="settings-model-search">${icons.search}<input value="${escapeHtml(state.modelQuery)}" data-action="model-search" placeholder="搜索 Provider 或模型"></label><div class="settings-model-groups">${groups || '<p class="settings-empty">没有匹配的模型</p>'}</div></section><section class="settings-card" id="settings-generation"><header><h2>生成</h2><p>这些参数随当前会话保存。</p></header>${renderGenerationSettings()}</section><section class="settings-card" id="settings-providers"><header><h2>Provider</h2><p>管理浏览器直连端点；Backend 凭据由账户安全保存。</p></header>${providerSettings || '<p class="settings-empty">当前没有可配置的浏览器 Provider。</p>'}${accountLink}</section><section class="settings-card" id="settings-interface"><header><h2>界面</h2><p>这些选项仅保存在当前浏览器。</p></header><div class="settings-interface-options"><label class="settings-check"><input type="checkbox" data-action="advanced-actions"${state.advancedActions ? " checked" : ""}><span><strong>显示高级对话操作</strong><small>显示“需要回答”和编辑助手回答</small></span></label><label class="settings-check"><input type="checkbox" data-action="history-tree-setting"${state.historyTree ? " checked" : ""}><span><strong>树状显示聊天历史</strong><small>按会话名称中的路径组织侧栏</small></span></label></div></section></main></div></section>`;
+  return `<section class="settings-page" role="dialog" aria-modal="true" aria-label="设置"><header class="settings-page-header"><button type="button" data-action="close-settings" aria-label="关闭设置">${icons.close}</button><span><strong>设置</strong><small>Provider 与凭据保存在当前浏览器</small></span></header><div class="settings-layout"><nav class="settings-nav" aria-label="设置分类"><button type="button" data-action="scroll-settings-section" data-id="settings-models">模型</button><button type="button" data-action="scroll-settings-section" data-id="settings-generation">生成</button><button type="button" data-action="scroll-settings-section" data-id="settings-providers">Provider</button><button type="button" data-action="scroll-settings-section" data-id="settings-interface">界面</button></nav><main class="settings-content"><section class="settings-card" id="settings-models"><header><h2>模型</h2><p>选择当前会话使用的模型。</p></header><label class="settings-model-search">${icons.search}<input value="${escapeHtml(state.modelQuery)}" data-action="model-search" placeholder="搜索 Provider 或模型"></label><div class="settings-model-groups">${groups || '<p class="settings-empty">没有可用模型；请启用预置 Provider 或添加自定义 Provider。</p>'}</div></section><section class="settings-card" id="settings-generation"><header><h2>生成</h2><p>这些参数随当前会话保存。</p></header>${renderGenerationSettings()}</section><section class="settings-card" id="settings-providers"><header><h2>Provider</h2><p>所有模型请求都由当前浏览器直接发送。</p></header>${providerSettings}</section><section class="settings-card" id="settings-interface"><header><h2>界面</h2><p>这些选项仅保存在当前浏览器。</p></header><div class="settings-interface-options"><label class="settings-check"><input type="checkbox" data-action="advanced-actions"${state.advancedActions ? " checked" : ""}><span><strong>显示高级对话操作</strong><small>显示“需要回答”和编辑助手回答</small></span></label><label class="settings-check"><input type="checkbox" data-action="history-tree-setting"${state.historyTree ? " checked" : ""}><span><strong>树状显示聊天历史</strong><small>按会话名称中的路径组织侧栏</small></span></label></div></section></main></div></section>`;
 }
 
 function scrollSettingsSection(id: string) {
@@ -903,7 +944,8 @@ function renderImportPanel() {
 
 function renderHistory() {
   const transferMenu = `<details class="history-transfer"><summary aria-label="导入或导出会话">${icons.transfer}</summary><div class="history-transfer-menu"><button type="button" data-action="import-session">${icons.upload}<span><strong>导入</strong><small>文件、ZIP 或本地文件夹</small></span></button><hr><button type="button" data-action="export-session" data-format="turnfold">${icons.transfer}<span><strong>Turnfold 完整备份</strong><small>整个本地仓库、分支和草稿</small></span></button><button type="button" data-action="export-session" data-format="codex"><span class="format-mark">CX</span><span><strong>Codex CLI JSONL</strong><small>导出当前分支</small></span></button><button type="button" data-action="export-session" data-format="claude"><span class="format-mark">CL</span><span><strong>Claude Code JSONL</strong><small>导出当前消息树</small></span></button><button type="button" data-action="export-session" data-format="omp"><span class="format-mark">OP</span><span><strong>OMP JSONL</strong><small>导出当前消息树</small></span></button></div></details>`;
-  return `<button class="history-backdrop${state.historyOpen ? " open" : ""}" type="button" aria-label="关闭历史记录" data-action="close-history"></button><aside class="history-sidebar${state.historyOpen ? " open" : ""}" aria-label="聊天历史"><div class="history-heading"><strong>聊天历史</strong><div>${transferMenu}<button type="button" data-action="toggle-history-tree" aria-label="${state.historyTree ? "平铺显示" : "树状显示"}">${state.historyTree ? icons.list : icons.tree}</button><button type="button" data-action="new-conversation" aria-label="新对话">${icons.plus}</button><button class="history-close" type="button" data-action="close-history" aria-label="关闭历史记录">${icons.close}</button></div></div><div class="history-list">${renderHistoryItems()}</div></aside>`;
+  const canCreate = Boolean(provider() && state.model);
+  return `<button class="history-backdrop${state.historyOpen ? " open" : ""}" type="button" aria-label="关闭历史记录" data-action="close-history"></button><aside class="history-sidebar${state.historyOpen ? " open" : ""}" aria-label="聊天历史"><div class="history-heading"><strong>聊天历史</strong><div>${transferMenu}<button type="button" data-action="toggle-history-tree" aria-label="${state.historyTree ? "平铺显示" : "树状显示"}">${state.historyTree ? icons.list : icons.tree}</button><button type="button" data-action="new-conversation" aria-label="新对话"${canCreate ? "" : " disabled"}>${icons.plus}</button><button class="history-close" type="button" data-action="close-history" aria-label="关闭历史记录">${icons.close}</button></div></div><div class="history-list">${renderHistoryItems()}</div></aside>`;
 }
 
 function activeReplyTargetId() {
@@ -953,11 +995,9 @@ function renderBranchNavigator(message: StoredChatMessage) {
 function renderMessagesMarkup() {
   const messages = displayedMessages();
   if (!messages.length) {
-    const description = !state.authenticated
-      ? "Frontend Provider 由当前浏览器直连；对话与草稿保存在本机，登录后可启用个人同步仓库。"
-      : provider()?.connection.type === "frontend"
-      ? "Frontend Provider 由当前浏览器直连；对话记录按当前身份同步。"
-      : "Backend Provider 由 Turnfold 服务端直连；对话记录按当前身份保存在服务端。";
+    const description = state.authenticated
+      ? "Provider 由当前浏览器直连；对话记录按当前身份同步。"
+      : "Provider 由当前浏览器直连；对话与草稿保存在本机。";
     return `<div class="welcome"><div class="welcome-mark">TF</div><h1>今天想聊什么？</h1><p>${escapeHtml(description)}</p></div>`;
   }
   return messages.map(renderMessage).join("");
@@ -975,8 +1015,13 @@ function workingItemText(item: WorkingItem) {
   return item.parts.filter((part) => part.type === "text" && typeof part.text === "string").map((part) => String(part.text)).join("");
 }
 
+function canStashActiveDraft() {
+  const draft = activeDraft();
+  return Boolean(draft && workingItemText(draft).trim());
+}
+
 function renderWorkingPanel() {
-  const drafts = state.workingItems.filter((item) => item.kind === "user-draft");
+  const drafts = state.workingItems.filter((item) => item.kind === "user-draft" && item.id !== state.activeDraftId);
   const unfinished = state.workingItems.filter((item) => item.kind === "assistant-stream" && item.status !== "streaming");
   const requestAssistantReply = activeDraft()?.requestAssistantReply ?? true;
   const assistantReplyToggle = state.advancedActions
@@ -984,13 +1029,22 @@ function renderWorkingPanel() {
     : "";
   const draftRows = drafts.map((item) => {
     const text = workingItemText(item).trim().replace(/\s+/g, " ");
-    return `<div class="draft-row${item.id === state.activeDraftId ? " active" : ""}"><button type="button" data-action="select-draft" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(text.slice(0, 36) || "空白草稿")}</strong><small>${draftLabel(item)} · ${new Date(item.updatedAt).toLocaleString()}</small></button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" aria-label="删除草稿">${icons.trash}</button></div>`;
+    return `<div class="draft-row"><button type="button" data-action="select-draft" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(text.slice(0, 36) || "空白草稿")}</strong><small>${draftLabel(item)} · ${new Date(item.updatedAt).toLocaleString()}</small></button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" aria-label="删除草稿">${icons.trash}</button></div>`;
   }).join("");
   const unfinishedRows = unfinished.map((item) => {
     const text = workingItemText(item).trim().replace(/\s+/g, " ");
     return `<div class="unfinished-row"><span><strong>未完成回答</strong><small>${escapeHtml(text.slice(0, 64) || "尚未输出正文")} · ${new Date(item.updatedAt).toLocaleString()}</small></span><button type="button" data-action="commit-partial" data-id="${escapeHtml(item.id)}">保留</button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}">清理</button></div>`;
   }).join("");
-  return `<div class="working-panel">${assistantReplyToggle}${renderComposerControls(activeDraft())}${unfinishedRows ? `<details class="unfinished-menu"><summary>未完成 ${unfinished.length}</summary><div>${unfinishedRows}</div></details>` : ""}<details class="draft-menu"><summary>草稿 ${drafts.length}</summary><div><button class="new-draft" type="button" data-action="new-draft">${icons.plus}新草稿</button>${draftRows}</div></details></div>`;
+  const canStash = canStashActiveDraft();
+  return `<div class="working-panel">${assistantReplyToggle}${renderComposerControls(activeDraft())}${unfinishedRows ? `<details class="unfinished-menu"><summary>未完成 ${unfinished.length}</summary><div>${unfinishedRows}</div></details>` : ""}<details class="draft-menu"><summary>草稿 ${drafts.length}</summary><div><button class="stash-draft" type="button" data-action="stash-draft" aria-label="将当前编辑区收起为草稿" title="${canStash ? "将当前编辑区收起到草稿列表" : "当前编辑区为空"}"${canStash ? "" : " disabled"}>${icons.stash}收起为草稿</button>${draftRows}</div></details></div>`;
+}
+
+function updateDraftStashControl() {
+  const button = root.querySelector<HTMLButtonElement>('[data-action="stash-draft"]');
+  if (!button) return;
+  const canStash = canStashActiveDraft();
+  button.disabled = !canStash;
+  button.title = canStash ? "将当前编辑区收起到草稿列表" : "当前编辑区为空";
 }
 
 function replyTargetLabel(message: StoredChatMessage) {
@@ -1031,7 +1085,8 @@ function renderThread() {
   const editRole = draft?.messageRole === "assistant" ? "助手回答" : "用户消息";
   const fullscreen = state.composerFullscreen;
   const queued = draft?.id === state.queuedDraftId;
-  const note = queued ? "已排队；会在当前回答完成后提交。" : state.offline ? "离线模式：提交保存在本地仓库，联网后自动 push。" : "草稿自动保存在此浏览器；模型可能会出错。";
+  const providerAvailable = Boolean(provider() && state.model);
+  const note = !providerAvailable ? "当前会话的 Provider 不可用；草稿仍会保存在此浏览器。" : queued ? "已排队；会在当前回答完成后提交。" : state.offline ? "离线模式：提交保存在本地仓库，联网后自动 push。" : "草稿自动保存在此浏览器；模型可能会出错。";
   const editorLabel = editing ? `正在编辑${editRole}` : "全屏编辑";
   const fullscreenHeader = fullscreen
     ? `<header class="fullscreen-editor-header"><span><strong>${editorLabel}</strong><small>草稿自动保存在此浏览器</small></span><button type="button" data-action="toggle-composer-fullscreen" aria-label="退出全屏编辑" title="退出全屏编辑（Esc）">${icons.close}</button></header>`
@@ -1039,7 +1094,24 @@ function renderThread() {
   const placeholder = fullscreen
     ? editing ? "编辑消息；Ctrl/⌘ + Enter 提交" : "输入消息；Ctrl/⌘ + Enter 提交"
     : editing ? "编辑消息，提交后从此处继续" : "输入消息，Enter 发送，Shift + Enter 换行";
-  return `<section class="thread-root"><div class="thread-viewport" id="thread-viewport">${renderBranchPreviewNotice()}<div id="message-list">${renderMessagesMarkup()}</div><div class="thread-footer${fullscreen ? " fullscreen-editor" : ""}">${fullscreenHeader}<button class="scroll-button" type="button" data-action="scroll-bottom" aria-label="滚动到底部">${icons.scroll}</button>${renderWorkingPanel()}${editing ? `<div class="edit-context"><span>正在编辑${editRole}；提交后当前会话将从这里继续</span><button type="button" data-action="cancel-edit">取消</button></div>` : ""}<form class="composer" id="composer"><textarea class="composer-input" name="message" placeholder="${placeholder}" rows="1" aria-label="聊天消息">${escapeHtml(draft ? workingItemText(draft) : "")}</textarea><div class="composer-actions">${state.streaming ? `<button class="stop-button" type="button" data-action="stop" aria-label="停止生成">${icons.stop}</button>` : ""}<button class="fullscreen-button" type="button" data-action="toggle-composer-fullscreen" aria-label="${fullscreen ? "退出全屏编辑" : "进入全屏编辑"}" title="${fullscreen ? "退出全屏编辑" : "全屏编辑"}">${fullscreen ? icons.collapse : icons.expand}</button></div>${renderModelPicker()}<button class="send-button" type="submit" data-action="send" aria-label="${state.streaming ? "排队发送" : "发送消息"}">${icons.send}</button></form><p class="composer-note${state.offline ? " offline" : ""}${queued ? " queued" : ""}">${note}</p></div></div></section>`;
+  return `<section class="thread-root"><div class="thread-viewport" id="thread-viewport">${renderBranchPreviewNotice()}<div id="message-list">${renderMessagesMarkup()}</div><div class="thread-footer${fullscreen ? " fullscreen-editor" : ""}">${fullscreenHeader}<button class="scroll-button" type="button" data-action="scroll-bottom" aria-label="滚动到底部">${icons.scroll}</button>${renderWorkingPanel()}${editing ? `<div class="edit-context"><span>正在编辑${editRole}；提交后当前会话将从这里继续</span><button type="button" data-action="cancel-edit">取消</button></div>` : ""}<form class="composer" id="composer"><textarea class="composer-input" name="message" placeholder="${placeholder}" rows="1" aria-label="聊天消息">${escapeHtml(draft ? workingItemText(draft) : "")}</textarea><div class="composer-actions">${state.streaming ? `<button class="stop-button" type="button" data-action="stop" aria-label="停止生成">${icons.stop}</button>` : ""}<button class="fullscreen-button" type="button" data-action="toggle-composer-fullscreen" aria-label="${fullscreen ? "退出全屏编辑" : "进入全屏编辑"}" title="${fullscreen ? "退出全屏编辑" : "全屏编辑"}"${fullscreen ? "" : " hidden"}>${fullscreen ? icons.collapse : icons.expand}</button></div>${renderModelPicker()}<button class="send-button" type="submit" data-action="send" aria-label="${state.streaming ? "排队发送" : "发送消息"}"${providerAvailable ? "" : " disabled"}>${icons.send}</button></form><p class="composer-note${state.offline ? " offline" : ""}${queued ? " queued" : ""}">${note}</p></div></div></section>`;
+}
+
+const compactComposerLineLimit = 3;
+
+function syncComposerInputLayout(input = root.querySelector<HTMLTextAreaElement>('textarea[name="message"]')) {
+  if (!input || state.composerFullscreen) return;
+  const fullscreenButton = input.form?.querySelector<HTMLButtonElement>(".fullscreen-button");
+  if (fullscreenButton) fullscreenButton.hidden = true;
+  input.style.height = "auto";
+  const style = window.getComputedStyle(input);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  const maxHeight = Math.ceil(lineHeight * compactComposerLineLimit + verticalPadding);
+  const reachesLineLimit = input.scrollHeight >= maxHeight - 1;
+  if (fullscreenButton) fullscreenButton.hidden = !reachesLineLimit;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, maxHeight)}px`;
 }
 
 function setComposerFullscreen(fullscreen: boolean) {
@@ -1050,10 +1122,7 @@ function setComposerFullscreen(fullscreen: boolean) {
   renderApp();
   window.requestAnimationFrame(() => {
     const nextInput = root.querySelector<HTMLTextAreaElement>('textarea[name="message"]');
-    if (nextInput && !fullscreen) {
-      nextInput.style.height = "auto";
-      nextInput.style.height = `${Math.min(nextInput.scrollHeight, 180)}px`;
-    }
+    if (!fullscreen) syncComposerInputLayout(nextInput);
     nextInput?.focus();
     nextInput?.setSelectionRange(selectionStart, selectionEnd);
   });
@@ -1062,7 +1131,7 @@ function setComposerFullscreen(fullscreen: boolean) {
 function syncIndicatorTitle() {
   if (!state.authenticated) return state.offline
     ? "当前离线；数据安全保存在当前浏览器"
-    : "本地模式：数据仅保存在当前浏览器；后端可用时自动启用登录与同步";
+    : "本地模式：数据仅保存在当前浏览器";
   const last = state.lastFetchAt ? new Date(state.lastFetchAt).toLocaleString() : "从未完成 fetch";
   if (state.offline) return `当前离线；本地更改安全保存在浏览器中 · 上次完成：${last}`;
   if (state.syncing) return `正在 fetch · 上次完成：${last}`;
@@ -1086,7 +1155,7 @@ function updateSyncIndicator() {
   const visual = syncIndicatorState();
   indicator.className = `identity-sync-control ${visual.className}`;
   indicator.title = syncIndicatorTitle();
-  indicator.setAttribute("aria-label", state.authenticated ? `打开我的账户；${visual.label}` : `${visual.label}仓库`);
+  indicator.setAttribute("aria-label", state.authenticated ? `个人同步仓库；${visual.label}` : `${visual.label}仓库`);
   const label = indicator.querySelector<HTMLElement>(".identity-sync-label");
   if (label) label.textContent = visual.label;
 }
@@ -1094,15 +1163,12 @@ function updateSyncIndicator() {
 function renderIdentitySyncControl(profile: ChatProfile) {
   const visual = syncIndicatorState();
   const title = syncIndicatorTitle();
-  const href = state.authenticated ? state.accountUrl : "";
-  const ariaLabel = state.authenticated ? `打开我的账户；${visual.label}` : `${visual.label}仓库`;
+  const ariaLabel = state.authenticated ? `个人同步仓库；${visual.label}` : `${visual.label}仓库`;
   const identity = state.authenticated
     ? `<span class="identity-sync-avatar"><img class="header-avatar" src="${avatarPlaceholder(profile)}" alt="${escapeHtml(profile.name || profile.username)} 的头像" referrerpolicy="no-referrer"><i class="identity-sync-status" aria-hidden="true"></i></span>`
     : `<span class="identity-sync-avatar identity-sync-local" aria-hidden="true">${icons.offline}<i class="identity-sync-status"></i></span>`;
   const content = `${identity}<span class="identity-sync-label">${escapeHtml(visual.label)}</span>`;
-  return href
-    ? `<a class="identity-sync-control ${visual.className}" href="${escapeHtml(href)}" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(title)}">${content}</a>`
-    : `<span class="identity-sync-control ${visual.className}" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(title)}">${content}</span>`;
+  return `<span class="identity-sync-control ${visual.className}" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(title)}">${content}</span>`;
 }
 
 function renderApp() {
@@ -1111,12 +1177,17 @@ function renderApp() {
     root.innerHTML = `<main class="state-page"><div class="state-card"><span class="state-mark">!</span><h1>聊天服务暂时不可用</h1><p>${escapeHtml(state.error)}</p>${renderProviderSettings()}</div></main>`;
     return;
   }
-  if (state.loading || !state.config || !provider() || !state.conversation) {
-    root.innerHTML = '<main class="state-page"><div class="state-card"><span class="loader"></span><p>正在读取聊天历史与 Provider Registry…</p></div></main>';
+  if (state.loading || !state.config) {
+    root.innerHTML = '<main class="state-page"><div class="state-card"><span class="loader"></span><p>正在读取本地工作区…</p></div></main>';
     return;
   }
   const profile = state.config.profile;
-  root.innerHTML = `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${renderIdentitySyncControl(profile)}</div></header>${renderHistory()}${renderThread()}${renderImportPanel()}${renderSettingsPage()}</main>`;
+  const usableProvider = state.config.providers.some((item) => item.models.length > 0);
+  const workspace = state.conversation
+    ? renderThread()
+    : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>${usableProvider ? "开始一个新对话" : state.config.providers.length ? "为 Provider 添加模型" : "启用你的第一个 Provider"}</h1><p>${usableProvider ? "当前模型已就绪，可以创建对话。" : state.config.providers.length ? "手动填写模型 ID，或在 Provider 设置中刷新模型列表。" : "选择一个预置并保存本地覆盖，或添加自定义 Provider。凭据只保存在当前浏览器。"}</p><button type="button" data-action="${usableProvider ? "new-conversation" : "open-provider-settings"}">${usableProvider ? "新对话" : "打开 Provider 设置"}</button></section>`;
+  root.innerHTML = `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${renderIdentitySyncControl(profile)}</div></header>${renderHistory()}${workspace}${renderImportPanel()}${renderSettingsPage()}</main>`;
+  window.requestAnimationFrame(() => syncComposerInputLayout());
   scheduleMathTypesetting(root);
   void updateAvatar();
 }
@@ -1363,121 +1434,43 @@ function closeHistoryOnMobile() {
   if (window.matchMedia("(max-width: 680px)").matches) state.historyOpen = false;
 }
 
-function providerHeaders(item: ChatProvider, secret: ProviderSecret, initial?: HeadersInit) {
-  const headers = new Headers(initial);
-  for (const [name, value] of Object.entries(item.headers || {})) headers.set(name, value);
-  for (const [name, value] of Object.entries(secret.provider?.headers || {})) headers.set(name, value);
-  const apiKey = secret.provider?.apiKey || "";
-  if (item.auth.type === "bearer" && apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
-  if (item.auth.type === "header" && item.auth.header && apiKey) headers.set(item.auth.header, apiKey);
-  return headers;
+async function discoverLocalProvider(item: ChatProvider) {
+  const secret = localCredential(item.id)?.secret || {};
+  const discovered = await discoverProviderModels(item, secret);
+  const localModels = item.models.filter((model) => model.source !== "discovered" && !discovered.some((candidate) => candidate.id === model.id));
+  const models = [...localModels, ...discovered];
+  const updated: ChatProvider = {
+    ...item,
+    models,
+    defaultModel: models.some((model) => model.id === item.defaultModel) ? item.defaultModel : models[0].id,
+    modelDiscoveryError: undefined,
+    updatedAt: messageNow()
+  };
+  await saveLocalProviderProfile(updated);
+  return updated;
 }
 
-function normalizeModels(payload: unknown): ProviderModel[] {
-  const root = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
-  const source = Array.isArray(root.data) ? root.data : Array.isArray(root.models) ? root.models : [];
-  return source.slice(0, 300).flatMap((value) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-    const model = value as Record<string, unknown>;
-    const rawId = model.id || model.name || model.model;
-    if (typeof rawId !== "string" || !rawId.trim()) return [];
-    const id = rawId.replace(/^models\//, "");
-    return [{id, name: typeof model.displayName === "string" ? model.displayName : typeof model.name === "string" ? model.name.replace(/^models\//, "") : id}];
-  });
-}
-
-async function discoverFrontendProvider(item: ChatProvider, secret: ProviderSecret) {
-  const effective = applyBrowserProviderSettings(item, secret) as ChatProvider;
-  const providerFetch = createBrowserProviderFetch(effective, secret);
-  const response = await providerFetch(effective.discovery.url, {
-    headers: providerHeaders(effective, secret, {"Accept": "application/json"}),
-    signal: AbortSignal.timeout(15000)
-  });
-  const payload = await response.json().catch(() => null);
-  let models = response.ok ? normalizeModels(payload) : [];
-  if (effective.id === "llama.cpp" && !models.length) {
-    const propsUrl = `${effective.connection.baseUrl.replace(/\/v1\/?$/, "")}/props`;
-    const props = await providerFetch(propsUrl, {headers: providerHeaders(effective, secret), signal: AbortSignal.timeout(5000)});
-    const value = await props.json() as {model_alias?: string; model_path?: string};
-    const id = value.model_alias?.trim() || value.model_path?.split(/[\\/]/).filter(Boolean).at(-1) || effective.defaultModel;
-    if (props.ok) models = [{id, name: id}];
-  }
-  if (!response.ok && !models.length) throw new Error(`Provider HTTP ${response.status}`);
-  return {...effective, models, modelDiscoveryError: undefined};
-}
-
-async function parseLines(response: Response, onLine: (line: string) => void | Promise<void>) {
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null) as {error?: string} | null;
-    throw new Error(payload?.error || `HTTP ${response.status}`);
-  }
-  if (!response.body) throw new Error("Streaming response body is unavailable");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const {done, value} = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) if (line.trim()) await onLine(line.trim());
-    if (done) break;
-  }
-  if (buffer.trim()) await onLine(buffer.trim());
-}
-
-async function streamBackend(messages: StoredChatMessage[], onEvent: (event: StreamEvent) => void, signal: AbortSignal, context?: StreamRequestContext) {
+async function streamLocalProvider(messages: StoredChatMessage[], onEvent: (event: StreamEvent) => void, signal: AbortSignal, context?: StreamRequestContext) {
   const item = context?.provider || provider()!;
-  const credential = item.credentials.find((value) => value.name === "default") || item.credentials[0];
-  if (!credential) throw new Error(`请先在 Key Vault 中配置 ${item.name}`);
-  const response = await fetch(appUrl("/api/chat"), {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({conversationId: context?.conversationId || state.conversation!.id, providerId: item.id, credentialName: credential.name, model: context?.model || state.model, generationSettings: context?.generationSettings || state.generationSettings, messages}),
-    signal
-  });
-  await parseLines(response, (line) => onEvent(JSON.parse(line) as StreamEvent));
-}
-
-async function streamFrontend(messages: StoredChatMessage[], onEvent: (event: StreamEvent) => void, signal: AbortSignal, context?: StreamRequestContext) {
-  const item = context?.provider || provider()!;
-  if (item.api !== "openai-completions") throw new Error(`Frontend Provider 暂不支持 ${item.api}`);
+  if (!item) throw new Error("当前会话尚未配置 Provider");
   const credential = localCredential(item.id);
   const secret = credential?.secret || {};
-  const effective = applyBrowserProviderSettings(item, secret) as ChatProvider;
-  const providerFetch = createBrowserProviderFetch(effective, secret);
+  if (item.auth.type !== "none" && !secret.apiKey && !Object.keys(secret.headers || {}).length) throw new Error(`请先配置 ${item.name} 的凭据`);
   const startedAt = performance.now();
-  let outputTokens: number | null = null;
   let responseText = "";
-  const response = await providerFetch(`${effective.connection.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: providerHeaders(effective, secret, {"Content-Type": "application/json", "Accept": "text/event-stream"}),
-    body: JSON.stringify({
-      model: context?.model || state.model,
-      messages: messages.filter((message) => message.role !== "system" || messagePartText(message, "text")).map((message) => ({role: message.role, content: messagePartText(message, "text")})),
-      stream: true,
-      stream_options: {include_usage: true},
-      ...((context?.generationSettings || state.generationSettings).temperature !== null ? {temperature: (context?.generationSettings || state.generationSettings).temperature} : {}),
-      ...((context?.generationSettings || state.generationSettings).maxOutputTokens !== null ? {max_tokens: (context?.generationSettings || state.generationSettings).maxOutputTokens} : {}),
-      ...(!["auto", "none"].includes((context?.generationSettings || state.generationSettings).reasoning) ? {reasoning_effort: (context?.generationSettings || state.generationSettings).reasoning} : {})
-    }),
+  const result = await streamProvider(
+    item,
+    secret,
+    context?.model || state.model,
+    messages.filter((message) => ["system", "user", "assistant"].includes(message.role)).map((message) => ({role: message.role as "system" | "user" | "assistant", text: messagePartText(message, "text")})).filter((message) => message.role !== "system" || message.text),
+    context?.generationSettings || state.generationSettings,
+    (event) => {
+      if (event.type === "text-delta") responseText += event.text;
+      onEvent(event);
+    },
     signal
-  });
-  await parseLines(response, (line) => {
-    if (!line.startsWith("data:")) return;
-    const data = line.slice(5).trim();
-    if (!data || data === "[DONE]") return;
-    const payload = JSON.parse(data) as {choices?: Array<{delta?: {content?: string; reasoning?: string; reasoning_content?: string}}>; usage?: {completion_tokens?: number; output_tokens?: number}};
-    const delta = payload.choices?.[0]?.delta;
-    if (delta?.reasoning_content || delta?.reasoning) onEvent({type: "reasoning-delta", text: delta.reasoning_content || delta.reasoning});
-    if (delta?.content) {
-      responseText += delta.content;
-      onEvent({type: "text-delta", text: delta.content});
-    }
-    const reported = payload.usage?.completion_tokens ?? payload.usage?.output_tokens;
-    if (typeof reported === "number") outputTokens = reported;
-  });
-  onEvent({type: "finish", metadata: responseMetadata(item.id, context?.model || state.model, startedAt, outputTokens, outputTokens === null ? estimateFrontendOutputTokens(responseText) : undefined)});
+  );
+  onEvent({type: "finish", metadata: responseMetadata(item.id, context?.model || state.model, startedAt, result.outputTokens, result.outputTokens === undefined ? estimateFrontendOutputTokens(responseText) : undefined)});
 }
 
 async function generateConversationTitle(conversation: Conversation, item: ChatProvider, model: string) {
@@ -1503,8 +1496,7 @@ async function generateConversationTitle(conversation: Conversation, item: ChatP
       if (event.type === "error") throw new Error(event.error || "标题生成失败");
     };
     const signal = AbortSignal.timeout(30000);
-    if (item.connection.type === "backend") await streamBackend([promptMessage], onEvent, signal, context);
-    else await streamFrontend([promptMessage], onEvent, signal, context);
+    await streamLocalProvider([promptMessage], onEvent, signal, context);
     const generated = normalizeGeneratedConversationTitle(output);
     if (!generated) return;
     const current = await getConversationHistory(conversation.id);
@@ -1639,10 +1631,7 @@ async function editMessage(index: number) {
   state.composerFullscreen = shouldOpenFullscreenEditor(workingItemText(draft));
   await persistWorkingItem(draft, true);
   const input = root.querySelector<HTMLTextAreaElement>('textarea[name="message"]');
-  if (input && !state.composerFullscreen) {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
-  }
+  syncComposerInputLayout(input);
   input?.focus();
   input?.setSelectionRange(input.value.length, input.value.length);
 }
@@ -1697,11 +1686,34 @@ async function cancelEdit() {
   renderApp();
 }
 
-async function createDraft() {
-  if (!state.conversation) return;
-  const item = newDraftItem(state.conversation.id);
-  state.activeDraftId = item.id;
-  await persistWorkingItem(item, true);
+async function stashActiveDraft() {
+  const draft = activeDraft();
+  if (!draft || !workingItemText(draft).trim()) return;
+  window.clearTimeout(state.workingSaveTimers.get(draft.id));
+  state.workingSaveTimers.delete(draft.id);
+  await persistWorkingItem(draft);
+  state.activeDraftId = "";
+  state.composerFullscreen = false;
+  renderApp();
+  root.querySelector<HTMLTextAreaElement>('textarea[name="message"]')?.focus();
+}
+
+async function activateDraft(id: string) {
+  const next = state.workingItems.find((item) => item.id === id && item.kind === "user-draft");
+  if (!next || next.id === state.activeDraftId) return;
+  const current = activeDraft();
+  if (current) {
+    window.clearTimeout(state.workingSaveTimers.get(current.id));
+    state.workingSaveTimers.delete(current.id);
+    if (workingItemText(current).trim()) await persistWorkingItem(current);
+    else {
+      await removeWorkingItem(current.id);
+      state.workingItems = state.workingItems.filter((item) => item.id !== current.id);
+    }
+  }
+  state.activeDraftId = next.id;
+  state.composerFullscreen = false;
+  renderApp();
   root.querySelector<HTMLTextAreaElement>('textarea[name="message"]')?.focus();
 }
 
@@ -1741,7 +1753,8 @@ function checkpointWorkingItem(item: WorkingItem) {
 
 async function generateAssistant(baseMessages: StoredChatMessage[]) {
   if (!state.conversation) return;
-  const responseProvider = provider()!;
+  const responseProvider = provider();
+  if (!responseProvider || !state.model) throw new Error("当前会话的 Provider 不可用；请先在设置中添加或选择 Provider");
   const responseModel = state.model;
   const conversationId = state.conversation.id;
   const baseHeadId = state.conversation.headMessageId;
@@ -1802,8 +1815,7 @@ async function generateAssistant(baseMessages: StoredChatMessage[]) {
     else scheduleMessagesRender();
   };
   try {
-    if (provider()!.connection.type === "backend") await streamBackend(baseMessages, onEvent, state.streamController.signal);
-    else await streamFrontend(baseMessages, onEvent, state.streamController.signal);
+    await streamLocalProvider(baseMessages, onEvent, state.streamController.signal);
     if (!finished) throw new Error("Provider 未返回完成事件");
     const committedAssistant = await immutableMessage({
       parentMessageId: baseHeadId,
@@ -1888,6 +1900,7 @@ async function generateAssistant(baseMessages: StoredChatMessage[]) {
 
 async function sendMessage(text: string) {
   if (!state.conversation || !text.trim()) return;
+  if (!provider() || !state.model) throw new Error("当前会话的 Provider 不可用；请先在设置中添加或选择 Provider");
   const draft = activeDraft();
   if (state.streaming) {
     if (!draft) return;
@@ -2056,18 +2069,17 @@ async function commitPartial(id: string) {
 async function selectConversation(id: string, navigation: HashNavigationMode = "push") {
   if (state.streaming || !state.config || state.conversation?.id === id) return;
   const selected = await getConversationHistory(id);
-  const selectedProvider = state.config.providers.find((item) => item.id === selected.providerId) || state.config.providers[0];
-  if (!selectedProvider) return;
+  const selectedProvider = state.config.providers.find((item) => item.id === selected.providerId);
   state.conversation = selected;
   state.previewHeadId = "";
   state.composerFullscreen = false;
-  state.providerId = selectedProvider.id;
-  state.model = selectedProvider.models.some((model) => model.id === selected.model)
+  state.providerId = selectedProvider?.id || selected.providerId;
+  state.model = selectedProvider?.models.some((model) => model.id === selected.model)
     ? selected.model
-    : settingsForProvider(selectedProvider).model;
+    : selectedProvider ? settingsForProvider(selectedProvider).model : selected.model;
   state.generationSettings = selected.generationSettings;
   await loadConversationWorkingItems(selected.id);
-  rememberModel(state.providerId, state.model);
+  if (selectedProvider) rememberModel(state.providerId, state.model);
   closeHistoryOnMobile();
   if (navigation !== "none") updateConversationHash(selected.id, navigation);
   renderApp();
@@ -2143,110 +2155,290 @@ function scheduleSettingsSave() {
   }, 400);
 }
 
-async function configureLocal(providerId: string) {
-  const item = state.frontendProviders.find((candidate) => candidate.id === providerId);
-  if (!item) return;
-  const current = await getLocalCredential(item.id);
-  if (item.auth.type === "none") {
-    const baseUrl = window.prompt(`${item.name} Base URL：`, current?.secret.provider?.baseUrl || item.connection.baseUrl);
-    if (baseUrl === null) return;
-    try {
-      const parsed = new URL(baseUrl);
-      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
-    } catch {
-      window.alert("Base URL 必须是有效的 http 或 https URL");
-      return;
-    }
-    await saveLocalCredential(item.id, "default", {...current?.secret, provider: {...current?.secret.provider, baseUrl: baseUrl.replace(/\/+$/, "")}});
-  } else {
-    const apiKey = window.prompt(`${item.name} API Key：`, current?.secret.provider?.apiKey || "");
-    if (apiKey === null) return;
-    const proxyToken = item.connection.proxy?.type === "relay" ? window.prompt("Relay Token（没有则留空）：", current?.secret.proxy?.token || "") || "" : "";
-    await saveLocalCredential(item.id, "default", {provider: {apiKey}, ...(proxyToken ? {proxy: {token: proxyToken}} : {})});
-  }
-  window.location.reload();
+function openProviderEditor(providerId = "") {
+  state.settingsOpen = true;
+  state.providerEditorOpen = true;
+  state.providerEditorId = providerId;
+  state.providerModelEditorOpen = false;
+  state.providerModelProviderId = "";
+  state.providerModelPresetId = "";
+  renderApp();
+  window.requestAnimationFrame(() => {
+    root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"});
+    root.querySelector<HTMLInputElement>('[name="provider-name"]')?.focus();
+  });
 }
 
-async function probeLocal(providerId: string) {
-  const item = state.frontendProviders.find((candidate) => candidate.id === providerId);
+function openProviderModelEditor(providerId: string) {
+  if (!state.config?.providers.some((item) => item.id === providerId)) return;
+  state.settingsOpen = true;
+  state.providerEditorOpen = false;
+  state.providerEditorId = "";
+  state.providerModelEditorOpen = true;
+  state.providerModelProviderId = providerId;
+  state.providerModelPresetId = "";
+  renderApp();
+  window.requestAnimationFrame(() => {
+    root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"});
+    root.querySelector<HTMLInputElement>('[name="provider-model-id"]')?.focus();
+  });
+}
+
+function closeProviderModelEditor() {
+  state.providerModelEditorOpen = false;
+  state.providerModelProviderId = "";
+  state.providerModelPresetId = "";
+}
+
+function openProviderSettings() {
+  state.settingsOpen = true;
+  state.providerEditorOpen = false;
+  state.providerEditorId = "";
+  closeProviderModelEditor();
+  renderApp();
+  window.requestAnimationFrame(() => root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"}));
+}
+
+function formValue(form: HTMLFormElement, name: string) {
+  const field = form.elements.namedItem(name);
+  return field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement ? field.value.trim() : "";
+}
+
+function validProviderUrl(value: string, label: string, required = true) {
+  if (!value && !required) return "";
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+    return value.replace(/\/+$/, "");
+  } catch {
+    throw new Error(`${label} 必须是有效的 http 或 https URL`);
+  }
+}
+
+function validProviderId(value: string) {
+  const id = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{0,79}$/.test(id)) throw new Error("Provider 标识只能包含小写字母、数字、点、下划线和连字符");
+  return id;
+}
+
+function providerHeadersFromJson(value: string) {
+  if (!value) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("附加 Headers 必须是有效的 JSON 对象");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("附加 Headers 必须是 JSON 对象");
+  const headers: Record<string, string> = {};
+  for (const [name, headerValue] of Object.entries(parsed)) {
+    if (typeof headerValue !== "string") throw new Error(`Header ${name} 的值必须是字符串`);
+    if (!name.trim()) throw new Error("Header 名称不能为空");
+    headers[name] = headerValue;
+  }
+  return headers;
+}
+
+async function saveProviderForm(form: HTMLFormElement) {
+  if (!state.config) return;
+  const existing = state.config.providers.find((item) => item.id === state.providerEditorId);
+  const preset = getProviderPreset(state.providerEditorId);
+  const template = existing || preset;
+  const activeProviderMissing = Boolean(state.providerId && !state.config.providers.some((item) => item.id === state.providerId));
+  const providerId = validProviderId(formValue(form, "provider-id"));
+  const name = formValue(form, "provider-name");
+  const protocol = formValue(form, "provider-protocol") as ProviderProtocol;
+  const baseUrl = validProviderUrl(formValue(form, "provider-base-url"), "Base URL");
+  const discoveryUrl = validProviderUrl(formValue(form, "provider-discovery-url"), "模型发现 URL", false);
+  const authType = formValue(form, "provider-auth") as ProviderProfile["auth"]["type"];
+  const authHeader = formValue(form, "provider-auth-header");
+  const defaultModel = formValue(form, "provider-default-model");
+  const headers = providerHeadersFromJson(formValue(form, "provider-headers"));
+  if (!name) throw new Error("Provider 名称不能为空");
+  if (state.providerEditorId && providerId !== state.providerEditorId) throw new Error("已保存 Provider 的标识不能修改");
+  if (!existing && state.config.providers.some((item) => item.id === providerId)) throw new Error("该 Provider 标识已存在");
+  if (!["openai-chat", "openai-responses", "anthropic", "google"].includes(protocol)) throw new Error("不支持的 Provider 协议");
+  if (!["none", "bearer", "header"].includes(authType)) throw new Error("不支持的认证方式");
+  if (authType === "header" && !authHeader) throw new Error("自定义 Header 认证需要填写 Header 名称");
+  const timestamp = messageNow();
+  const endpointChanged = Boolean(template && (template.baseUrl !== baseUrl || template.protocol !== protocol));
+  const models = endpointChanged ? [] : [...(template?.models || [])];
+  if (defaultModel && !models.some((model) => model.id === defaultModel)) models.unshift({id: defaultModel, name: defaultModel, source: "manual"});
+  const profileInput: ChatProvider = {
+    id: providerId,
+    name,
+    protocol,
+    baseUrl,
+    auth: authType === "header" ? {type: "header", header: authHeader} : {type: authType},
+    headers,
+    discoveryUrl,
+    models,
+    defaultModel: defaultModel || models[0]?.id || "",
+    createdAt: existing?.createdAt || timestamp,
+    updatedAt: timestamp
+  };
+  const profile = await saveLocalProviderProfile(profileInput) as ChatProvider;
+  const apiKey = formValue(form, "provider-api-key");
+  if (authType === "none") await deleteLocalCredential(profile.id);
+  else if (apiKey) await saveLocalCredential(profile.id, "default", {apiKey});
+  state.localCredentials = await listLocalCredentials();
+  state.config.providers = existing
+    ? state.config.providers.map((item) => item.id === profile.id ? profile : item)
+    : [...state.config.providers, profile];
+  if (!state.providerId || activeProviderMissing || state.providerId === profile.id) {
+    state.providerId = profile.id;
+    state.model = settingsForProvider(profile).model;
+    if (state.conversation) {
+      state.conversation = {...state.conversation, providerId: profile.id, model: state.model};
+      scheduleSettingsSave();
+    }
+  }
+  window.localStorage.setItem("turnfold-provider", profile.id);
+  if (state.model) window.localStorage.setItem(`turnfold-model:${profile.id}`, state.model);
+  state.providerEditorOpen = false;
+  state.providerEditorId = "";
+  await cacheChatConfig(state.identityKey, {profile: state.config.profile});
+  renderApp();
+}
+
+async function saveProviderModelForm(form: HTMLFormElement) {
+  if (!state.config) return;
+  const provider = state.config.providers.find((item) => item.id === state.providerModelProviderId);
+  if (!provider) throw new Error("Provider 已不存在");
+  const modelId = formValue(form, "provider-model-id");
+  if (!modelId) throw new Error("模型 ID 不能为空");
+  if (/\s/.test(modelId)) throw new Error("模型 ID 不能包含空白字符");
+  const modelName = formValue(form, "provider-model-name") || modelId;
+  const template = getProviderPreset(provider.id)?.models.find((model) => model.id === modelId)
+    || provider.models.find((model) => model.id === modelId);
+  const model: ProviderModel = {...template, id: modelId, name: modelName, source: "manual"};
+  const models = [...provider.models];
+  const existingIndex = models.findIndex((item) => item.id === modelId);
+  if (existingIndex >= 0) models.splice(existingIndex, 1, model);
+  else models.push(model);
+  const updated = await saveLocalProviderProfile({
+    ...provider,
+    models,
+    defaultModel: provider.defaultModel || modelId,
+    updatedAt: messageNow()
+  }) as ChatProvider;
+  state.config.providers = state.config.providers.map((item) => item.id === updated.id ? updated : item);
+  if (state.providerId === updated.id && !state.model) {
+    state.model = updated.defaultModel;
+    window.localStorage.setItem(`turnfold-model:${updated.id}`, state.model);
+    if (state.conversation) {
+      state.conversation = {...state.conversation, model: state.model};
+      scheduleSettingsSave();
+    }
+  }
+  closeProviderModelEditor();
+  renderApp();
+}
+
+async function probeProvider(providerId: string) {
+  if (!state.config) return;
+  const item = state.config.providers.find((candidate) => candidate.id === providerId);
   if (!item) return;
   try {
-    const detected = await discoverFrontendProvider(item, (await getLocalCredential(item.id))?.secret || {});
-    state.frontendProviders = state.frontendProviders.map((candidate) => candidate.id === detected.id ? detected : candidate);
-    if (state.config) state.config.providers = [...state.config.providers.filter((candidate) => candidate.id !== detected.id), detected];
+    const detected = await discoverLocalProvider(item);
+    state.config.providers = state.config.providers.map((candidate) => candidate.id === detected.id ? detected : candidate);
+    if (state.providerId === detected.id && !detected.models.some((model) => model.id === state.model)) state.model = settingsForProvider(detected).model;
     window.alert(`探测成功：发现 ${detected.models.length} 个模型`);
-    renderApp();
   } catch (error) {
-    window.alert(`探测失败：${error instanceof Error ? error.message : "未知错误"}\n\n请确认浏览器已允许当前站点的“本地网络访问”权限。`);
+    const message = error instanceof Error ? error.message : "未知错误";
+    state.config.providers = state.config.providers.map((candidate) => candidate.id === providerId ? {...candidate, modelDiscoveryError: message} : candidate);
+    window.alert(`探测失败：${message}\n\n请确认 Provider 允许当前网页跨域访问；本机端点还可能需要浏览器的“本地网络访问”权限。`);
   }
+  renderApp();
 }
 
-async function initializeLocalMode(clientId: string) {
-  const profileId = `local:${clientId}`;
-  state.authenticated = false;
-  state.identityKey = profileId;
-  state.syncing = false;
-  state.syncRequested = false;
-  state.initialFetchComplete = true;
-  state.lastFetchAt = "";
-  state.syncError = "";
-  state.error = "";
-  activateOfflineProfile(profileId);
-
-  const fallbackProviders: ChatProvider[] = builtInFrontendProviders.map((item) => ({
-    ...item,
-    models: [{id: item.defaultModel || "local-model", name: item.defaultModel || "local-model"}]
-  }));
-  state.frontendProviders = fallbackProviders;
-  state.config = {profile: {username: "local", name: "本地用户", email: ""}, providers: fallbackProviders};
-  await cacheChatConfig(profileId, {config: state.config, frontendProviders: fallbackProviders});
-  state.conversations = await listConversationHistory();
-  const hashId = conversationIdFromHash(window.location.hash);
-  const summary = state.conversations.find((item) => item.id === hashId) || state.conversations[0];
-  const savedProviderId = window.localStorage.getItem("turnfold-provider") || "";
-  let selectedProvider = fallbackProviders.find((item) => item.id === summary?.providerId)
-    || fallbackProviders.find((item) => item.id === savedProviderId)
-    || fallbackProviders[0];
-  if (!selectedProvider) throw new Error("没有可用的浏览器本地 Provider");
-  if (summary) {
-    state.conversation = await getConversationHistory(summary.id);
-    selectedProvider = fallbackProviders.find((item) => item.id === state.conversation!.providerId) || selectedProvider;
-  } else {
-    const selection = settingsForProvider(selectedProvider);
-    state.conversation = await createConversationHistory(selectedProvider.id, selection.model, defaultGenerationSettings, "");
-    state.conversations = [state.conversation];
+async function removeProvider(providerId: string) {
+  if (!state.config) return;
+  const item = state.config.providers.find((candidate) => candidate.id === providerId);
+  const presetOverride = isProviderPreset(providerId);
+  const prompt = presetOverride
+    ? `禁用预置 Provider“${item?.name || providerId}”并删除其本地覆盖和凭据？历史对话不会删除。`
+    : `删除此浏览器中的 Provider“${item?.name || providerId}”及其凭据？历史对话不会删除。`;
+  if (!item || !window.confirm(prompt)) return;
+  await deleteLocalProviderProfile(providerId);
+  await deleteLocalCredential(providerId);
+  state.localCredentials = await listLocalCredentials();
+  state.config.providers = state.config.providers.filter((candidate) => candidate.id !== providerId);
+  if (state.providerId === providerId) {
+    const replacement = state.config.providers.find((candidate) => candidate.models.length) || state.config.providers[0];
+    state.providerId = state.conversation?.providerId === providerId ? providerId : replacement?.id || "";
+    state.model = state.conversation?.providerId === providerId ? state.conversation.model : replacement ? settingsForProvider(replacement).model : "";
   }
-  const conversation = state.conversation!;
-  state.providerId = selectedProvider.id;
-  state.model = selectedProvider.models.some((model) => model.id === conversation.model)
-    ? conversation.model
-    : settingsForProvider(selectedProvider).model;
-  state.generationSettings = conversation.generationSettings;
-  await loadConversationWorkingItems(conversation.id);
-  rememberModel(state.providerId, state.model);
-  updateConversationHash(conversation.id, "replace");
-  state.loading = false;
-  state.offline = !navigator.onLine;
+  if (state.providerEditorId === providerId) {
+    state.providerEditorOpen = false;
+    state.providerEditorId = "";
+  }
+  if (state.providerModelProviderId === providerId) closeProviderModelEditor();
+  await cacheChatConfig(state.identityKey, {profile: state.config.profile});
   renderApp();
+}
 
-  void Promise.all(fallbackProviders.map(async (item) => {
-    const credential = state.localCredentials.find((value) => value.providerId === item.id && value.name === "default")
-      || state.localCredentials.find((value) => value.providerId === item.id);
-    if (!credential) return item;
-    try {
-      return await discoverFrontendProvider(item, credential?.secret || {});
-    } catch (error) {
-      return {...item, modelDiscoveryError: error instanceof Error ? error.message : "Model discovery failed"};
-    }
-  })).then(async (providers) => {
-    if (state.authenticated || state.identityKey !== profileId || !state.config) return;
-    state.frontendProviders = providers;
-    state.config.providers = providers;
-    const active = providers.find((item) => item.id === state.providerId);
-    if (active?.models.length && !active.models.some((model) => model.id === state.model)) state.model = settingsForProvider(active).model;
-    await cacheChatConfig(profileId, {config: state.config, frontendProviders: providers});
-    renderApp();
-  });
+function cachedProfile(value: CachedChatBootstrap | undefined) {
+  return value?.profile || value?.config?.profile;
+}
+
+function legacyProviderSources(...values: Array<CachedChatBootstrap | undefined>) {
+  return values.flatMap((value) => [
+    ...(value?.config?.providers || []),
+    ...(Array.isArray(value?.frontendProviders) ? value.frontendProviders : [])
+  ]);
+}
+
+async function migrateRelevantLegacyProviders(sources: unknown[]) {
+  const existing = await listLocalProviderProfiles();
+  const byId = new Map(existing.map((item) => [item.id, item]));
+  const relevantIds = new Set([
+    ...state.localCredentials.map((item) => item.providerId),
+    ...state.conversations.map((item) => item.providerId),
+    window.localStorage.getItem("turnfold-provider") || ""
+  ].filter(Boolean));
+  for (const source of sources) {
+    const migrated = migrateLegacyProviderProfile(source);
+    if (!migrated || !relevantIds.has(migrated.id) || byId.has(migrated.id)) continue;
+    const credential = state.localCredentials.find((item) => item.providerId === migrated.id);
+    const profile = credential?.legacyBaseUrl
+      ? {...migrated, baseUrl: validProviderUrl(credential.legacyBaseUrl, "Base URL")}
+      : migrated;
+    await saveLocalProviderProfile(profile);
+    byId.set(profile.id, profile);
+  }
+  return [...byId.values()];
+}
+
+async function restoreWorkspace(preferredConversationId = "") {
+  if (!state.config) return;
+  const hashId = conversationIdFromHash(window.location.hash);
+  const summary = state.conversations.find((item) => item.id === preferredConversationId)
+    || state.conversations.find((item) => item.id === hashId)
+    || state.conversations[0];
+  if (summary) {
+    const selected = await getConversationHistory(summary.id);
+    const selectedProvider = state.config.providers.find((item) => item.id === selected.providerId);
+    state.conversation = selected;
+    state.providerId = selectedProvider?.id || selected.providerId;
+    state.model = selectedProvider?.models.some((model) => model.id === selected.model)
+      ? selected.model
+      : selectedProvider ? settingsForProvider(selectedProvider).model : selected.model;
+    state.generationSettings = selected.generationSettings;
+    await loadConversationWorkingItems(selected.id);
+    if (selectedProvider) rememberModel(state.providerId, state.model);
+    updateConversationHash(selected.id, "replace");
+    return;
+  }
+  state.conversation = null;
+  state.workingItems = [];
+  state.activeDraftId = "";
+  const savedProviderId = window.localStorage.getItem("turnfold-provider") || "";
+  const selectedProvider = state.config.providers.find((item) => item.id === savedProviderId)
+    || state.config.providers.find((item) => item.models.length)
+    || state.config.providers[0];
+  state.providerId = selectedProvider?.id || "";
+  state.model = selectedProvider ? settingsForProvider(selectedProvider).model : "";
 }
 
 async function initialize() {
@@ -2264,144 +2456,74 @@ async function initialize() {
   if (previouslyActive && previouslyActive.profileId !== repositoryId) await mergeOfflineProfiles(previouslyActive.profileId, repositoryId);
   activateOfflineProfile(repositoryId);
   const stored = await loadCachedChatConfig<CachedChatBootstrap>(repositoryId);
-  let renderedLocalRepository = false;
-  if (stored) {
-    state.identityKey = stored.profileId;
-    activateOfflineProfile(stored.profileId);
-    state.config = stored.config.config;
-    state.frontendProviders = stored.config.frontendProviders;
-    state.lastFetchAt = stored.lastFetchAt || await cachedLastFetchAt();
-    state.conversations = await listConversationHistory();
-    const hashId = conversationIdFromHash(window.location.hash);
-    const summary = state.conversations.find((item) => item.id === hashId) || state.conversations[0];
-    if (summary) {
-      const selected = await getConversationHistory(summary.id);
-      const selectedProvider = state.config.providers.find((item) => item.id === selected.providerId) || state.config.providers[0];
-      if (selectedProvider) {
-        state.conversation = selected;
-        state.providerId = selectedProvider.id;
-        state.model = selectedProvider.models.some((model) => model.id === selected.model) ? selected.model : settingsForProvider(selectedProvider).model;
-        state.generationSettings = selected.generationSettings;
-        await loadConversationWorkingItems(selected.id);
-        rememberModel(state.providerId, state.model);
-        updateConversationHash(selected.id, "replace");
-        state.loading = false;
-        state.syncing = false;
-        state.offline = !navigator.onLine;
-        renderApp();
-        renderedLocalRepository = true;
-      }
-    } else {
-      const savedProviderId = window.localStorage.getItem("turnfold-provider") || "";
-      const selectedProvider = state.config.providers.find((item) => item.id === savedProviderId) || state.config.providers[0];
-      if (selectedProvider) {
-        const selection = settingsForProvider(selectedProvider);
-        state.conversation = await createConversationHistory(selectedProvider.id, selection.model, defaultGenerationSettings, "");
-        state.conversations = [state.conversation];
-        state.providerId = selectedProvider.id;
-        state.model = selection.model;
-        state.generationSettings = state.conversation.generationSettings;
-        state.loading = false;
-        state.syncing = false;
-        state.offline = !navigator.onLine;
-        updateConversationHash(state.conversation.id, "replace");
-        renderApp();
-        renderedLocalRepository = true;
-      }
-    }
+  state.identityKey = repositoryId;
+  state.config = {
+    profile: cachedProfile(stored?.config) || cachedProfile(previouslyActive?.config) || {username: "local", name: "本地用户", email: ""},
+    providers: []
+  };
+  state.lastFetchAt = stored?.lastFetchAt || await cachedLastFetchAt();
+  state.conversations = await listConversationHistory();
+  state.config.providers = await migrateRelevantLegacyProviders(legacyProviderSources(stored?.config, previouslyActive?.config));
+  await cacheChatConfig(repositoryId, {profile: state.config.profile});
+  await restoreWorkspace();
+  state.loading = false;
+  state.offline = !navigator.onLine;
+  if (!state.config.providers.length) {
+    state.settingsOpen = true;
+    state.providerEditorOpen = false;
   }
-
-  // The local repository is the application baseline. A server, when present,
-  // enhances this already-rendered state with identity, sync, and backend providers.
-  if (!renderedLocalRepository) {
-    await initializeLocalMode(clientId);
-    renderedLocalRepository = true;
-  }
+  renderApp();
+  if (!state.config.providers.length) window.requestAnimationFrame(() => {
+    root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"});
+  });
 
   try {
     const response = await fetch(appUrl("/api/config"), {cache: "no-store", redirect: "manual"});
-    if (response.type === "opaqueredirect" || response.status === 0 || response.status === 401 || response.status >= 300 && response.status < 400) {
-      return;
-    }
+    if (response.type === "opaqueredirect" || response.status === 0 || response.status === 401 || response.status >= 300 && response.status < 400) return;
     const payload = await response.json() as ServerChatConfig & {error?: string};
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     state.authenticated = true;
-    state.accountUrl = payload.accountUrl || "";
     await mergeOfflineProfiles(payload.identityKey, repositoryId);
     state.identityKey = repositoryId;
     activateOfflineProfile(repositoryId);
-    const providers = await Promise.all(payload.providers.map(async (item) => {
-      if (item.connection.type === "backend") return item;
-      const credential = state.localCredentials.find((value) => value.providerId === item.id && value.name === "default") || state.localCredentials.find((value) => value.providerId === item.id);
-      if (!credential) return item.auth.type === "none" ? item : {...item, models: []};
-      try {
-        return await discoverFrontendProvider(item, credential?.secret || {});
-      } catch (error) {
-        return {...item, models: item.models.length ? item.models : [{id: item.defaultModel || "local-model", name: item.defaultModel || "local-model"}], modelDiscoveryError: error instanceof Error ? error.message : "Model discovery failed"};
-      }
-    }));
-    state.frontendProviders = providers.filter((item) => item.connection.type === "frontend");
-    const configured: ChatConfig = {
-      profile: payload.profile,
-      providers: providers.filter((item) => item.models.length > 0 && (item.connection.type === "backend" ? item.credentials.length > 0 : item.auth.type === "none" || state.localCredentials.some((credential) => credential.providerId === item.id)))
-    };
-    state.config = configured;
-    await cacheChatConfig(repositoryId, {config: configured, frontendProviders: state.frontendProviders});
+    state.config.profile = payload.profile;
+    await cacheChatConfig(repositoryId, {profile: payload.profile});
     state.syncing = true;
     updateSyncIndicator();
+    const preferredConversationId = state.conversation?.id || "";
     const synchronized = await synchronizeConversationRepository();
     state.lastFetchAt = synchronized.fetchedAt;
     state.initialFetchComplete = true;
     state.syncError = synchronized.conflicts ? `${synchronized.conflicts} 个会话发生分叉，本地 head 已保留` : "";
     state.offline = false;
     state.conversations = synchronized.summaries;
-    const hashId = conversationIdFromHash(window.location.hash);
-    const selectedId = state.conversation && state.conversations.some((item) => item.id === state.conversation!.id)
-      ? state.conversation.id
-      : state.conversations.find((item) => item.id === hashId)?.id || state.conversations[0]?.id;
-    if (selectedId) {
-      const selected = await getConversationHistory(selectedId);
-      const selectedProvider = configured.providers.find((item) => item.id === selected.providerId) || configured.providers[0];
-      if (!selectedProvider) throw new Error("尚未配置可用的 Provider 凭据");
-      state.conversation = selected;
-      state.providerId = selectedProvider.id;
-      state.model = selectedProvider.models.some((model) => model.id === selected.model) ? selected.model : settingsForProvider(selectedProvider).model;
-      state.generationSettings = selected.generationSettings;
-      await loadConversationWorkingItems(selected.id);
-      rememberModel(state.providerId, state.model);
-      updateConversationHash(selected.id, "replace");
-    } else {
-      const savedProviderId = window.localStorage.getItem("turnfold-provider") || "";
-      const selectedProvider = configured.providers.find((item) => item.id === savedProviderId) || configured.providers[0];
-      if (!selectedProvider) throw new Error("尚未配置可用的 Provider 凭据");
-    const selection = settingsForProvider(selectedProvider);
-    state.conversation = await createConversationHistory(selectedProvider.id, selection.model, defaultGenerationSettings, "");
-    state.conversations = [state.conversation];
-    state.workingItems = [];
-    state.activeDraftId = "";
-    state.providerId = selectedProvider.id;
-    state.model = selection.model;
-    state.generationSettings = state.conversation.generationSettings;
-      rememberModel(state.providerId, state.model);
-      updateConversationHash(state.conversation.id, "replace");
-      scheduleRepositorySync();
-    }
-    state.loading = false;
+    await restoreWorkspace(preferredConversationId);
     state.syncing = false;
     renderApp();
     if (state.syncRequested) scheduleRepositorySync();
   } catch (error) {
+    state.authenticated = false;
     state.syncing = false;
     state.offline = !navigator.onLine;
-    state.syncError = state.authenticated ? error instanceof Error ? error.message : "Fetch failed" : "";
-    if (!renderedLocalRepository) throw error;
+    state.syncError = error instanceof Error ? error.message : "Fetch failed";
     updateSyncIndicator();
     if (state.syncRequested && navigator.onLine) scheduleRepositorySync(1000);
   }
 }
 
 root.addEventListener("submit", (event) => {
-  if (!(event.target instanceof HTMLFormElement) || event.target.id !== "composer") return;
+  if (!(event.target instanceof HTMLFormElement)) return;
+  if (event.target.matches("[data-provider-model-form]")) {
+    event.preventDefault();
+    void saveProviderModelForm(event.target).catch(showError);
+    return;
+  }
+  if (event.target.matches("[data-provider-form]")) {
+    event.preventDefault();
+    void saveProviderForm(event.target).catch(showError);
+    return;
+  }
+  if (event.target.id !== "composer") return;
   event.preventDefault();
   const input = event.target.elements.namedItem("message");
   if (input instanceof HTMLTextAreaElement) void sendMessage(input.value).catch(showError);
@@ -2409,6 +2531,17 @@ root.addEventListener("submit", (event) => {
 
 root.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.settingsOpen) {
+    if (state.providerModelEditorOpen) {
+      closeProviderModelEditor();
+      renderApp();
+      return;
+    }
+    if (state.providerEditorOpen) {
+      state.providerEditorOpen = false;
+      state.providerEditorId = "";
+      renderApp();
+      return;
+    }
     state.settingsOpen = false;
     state.modelQuery = "";
     renderApp();
@@ -2436,8 +2569,7 @@ root.addEventListener("keydown", (event) => {
 root.addEventListener("input", (event) => {
   const target = event.target;
   if (target instanceof HTMLTextAreaElement && target.name === "message") {
-    target.style.height = "auto";
-    target.style.height = `${Math.min(target.scrollHeight, 180)}px`;
+    syncComposerInputLayout(target);
     if (state.conversation) {
       let draft = activeDraft();
       if (!draft) {
@@ -2448,6 +2580,7 @@ root.addEventListener("input", (event) => {
       draft.parts = target.value ? [{type: "text", text: target.value}] : [];
       draft.updatedAt = messageNow();
       checkpointWorkingItem(draft);
+      updateDraftStashControl();
     }
   }
   if (target instanceof HTMLInputElement && target.dataset.action === "model-search") {
@@ -2536,7 +2669,17 @@ root.addEventListener("click", (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "open-settings") { state.settingsOpen = true; state.modelQuery = ""; renderApp(); }
-  if (action === "close-settings") { state.settingsOpen = false; state.modelQuery = ""; renderApp(); }
+  if (action === "close-settings") { state.settingsOpen = false; state.providerEditorOpen = false; state.providerEditorId = ""; closeProviderModelEditor(); state.modelQuery = ""; renderApp(); }
+  if (action === "open-provider-settings") openProviderSettings();
+  if (action === "add-provider") openProviderEditor();
+  if (action === "enable-provider-preset" && button.dataset.provider) openProviderEditor(button.dataset.provider);
+  if (action === "edit-provider" && button.dataset.provider) openProviderEditor(button.dataset.provider);
+  if (action === "cancel-provider-edit") { state.providerEditorOpen = false; state.providerEditorId = ""; renderApp(); }
+  if (action === "add-provider-model" && button.dataset.provider) openProviderModelEditor(button.dataset.provider);
+  if (action === "select-provider-model-preset" && button.dataset.model) { state.providerModelPresetId = button.dataset.model; renderApp(); }
+  if (action === "cancel-provider-model-edit") { closeProviderModelEditor(); renderApp(); }
+  if (action === "probe-provider" && button.dataset.provider) void probeProvider(button.dataset.provider).catch(showError);
+  if (action === "delete-provider" && button.dataset.provider) void removeProvider(button.dataset.provider).catch(showError);
   if (action === "scroll-settings-section" && button.dataset.id) scrollSettingsSection(button.dataset.id);
   if (action === "toggle-history") { state.historyOpen = !state.historyOpen; renderApp(); }
   if (action === "close-history") { state.historyOpen = false; renderApp(); }
@@ -2558,26 +2701,18 @@ root.addEventListener("click", (event) => {
   if (action === "select-conversation" && button.dataset.id) void selectConversation(button.dataset.id).catch(showError);
   if (action === "rename-conversation" && button.dataset.id) void renameConversation(button.dataset.id).catch(showError);
   if (action === "delete-conversation" && button.dataset.id) void removeConversation(button.dataset.id).catch(showError);
-  if (action === "new-draft") void createDraft().catch(showError);
+  if (action === "stash-draft") void stashActiveDraft().catch(showError);
   if (action === "toggle-composer-fullscreen") setComposerFullscreen(!state.composerFullscreen);
   if (action === "cancel-edit") void cancelEdit().catch(showError);
   if (action === "reply-message") void replyToMessage(Number(button.dataset.index)).catch(showError);
   if (action === "cancel-reply-target") void cancelReplyTarget().catch(showError);
   if (action === "jump-reply-target" && button.dataset.id) jumpToReplyTarget(button.dataset.id);
   if (action === "select-draft" && button.dataset.id) {
-    state.activeDraftId = button.dataset.id;
-    renderApp();
-    root.querySelector<HTMLTextAreaElement>('textarea[name="message"]')?.focus();
+    void activateDraft(button.dataset.id).catch(showError);
   }
   if (action === "delete-working" && button.dataset.id) void deleteWorking(button.dataset.id).catch(showError);
   if (action === "commit-partial" && button.dataset.id) void commitPartial(button.dataset.id).catch(showError);
   if (action === "choose-model" && button.dataset.provider && button.dataset.model) chooseModel(button.dataset.provider, button.dataset.model);
-  if (action === "configure-local" && button.dataset.provider) void configureLocal(button.dataset.provider).catch(showError);
-  if (action === "probe-local" && button.dataset.provider) void probeLocal(button.dataset.provider).catch(showError);
-  if (action === "delete-local" && button.dataset.provider) {
-    const item = state.frontendProviders.find((candidate) => candidate.id === button.dataset.provider);
-    if (item && window.confirm(`删除此浏览器中的 ${item.name} Credential？`)) void deleteLocalCredential(item.id).then(() => window.location.reload());
-  }
   if (action === "reset-settings") { state.generationSettings = {...defaultGenerationSettings}; scheduleSettingsSave(); renderApp(); }
   if (action === "stop") state.streamController?.abort();
   if (action === "scroll-bottom") scrollBottom("smooth");
@@ -2613,6 +2748,7 @@ window.addEventListener("online", () => {
   renderApp();
 });
 window.matchMedia("(min-width: 681px)").addEventListener("change", (event) => { state.historyOpen = event.matches; renderApp(); });
+window.addEventListener("resize", () => syncComposerInputLayout());
 window.addEventListener("pagehide", () => {
   const draft = activeDraft();
   if (draft) void persistWorkingItem(draft);

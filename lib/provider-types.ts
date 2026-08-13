@@ -1,4 +1,4 @@
-export type ProviderApi = "openai-completions" | "openai-responses" | "anthropic-messages" | "google-generative-ai";
+export type ProviderProtocol = "openai-chat" | "openai-responses" | "anthropic" | "google";
 
 export type ProviderModel = {
   id: string;
@@ -9,37 +9,39 @@ export type ProviderModel = {
   reasoning?: boolean;
   ownedBy?: string;
   pricing?: Record<string, unknown>;
+  source: "manual" | "discovered" | "preset";
 };
 
-export type ProviderDiscovery = {
-  type: "openai-models-list" | "anthropic-models-list" | "google-models-list";
-  url: string;
-};
-
-export type ProviderDefinition = {
+export type ProviderProfile = {
   id: string;
   name: string;
-  api: ProviderApi;
-  connection: {
-    type: "frontend" | "backend";
-    baseUrl: string;
-    proxy: null | {type: "relay" | "http" | "https" | "socks5"; url: string};
-  };
+  protocol: ProviderProtocol;
+  baseUrl: string;
   auth: {type: "bearer" | "header" | "none"; header?: string};
   headers: Record<string, string>;
+  discoveryUrl: string;
+  models: ProviderModel[];
   defaultModel: string;
-  discovery: ProviderDiscovery;
-  builtin: boolean;
-  credentialState: "configured" | "missing" | "local";
-  credentials: Array<{id: string; providerId: string; name: string; fingerprint: string}>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProviderCatalogSource = "keyvault" | "omp";
+
+export type ProviderPreset = Omit<ProviderProfile, "createdAt" | "updatedAt"> & {
+  catalogSources: ProviderCatalogSource[];
 };
 
 export type ProviderSecret = {
-  provider?: {apiKey?: string; headers?: Record<string, string>; baseUrl?: string};
-  proxy?: {username?: string; password?: string; token?: string};
+  apiKey?: string;
+  headers?: Record<string, string>;
 };
 
-export type ResolvedBackendProvider = {
-  provider: ProviderDefinition;
-  credential: {id: string; name: string; secret: ProviderSecret};
+export type ProviderMessage = {
+  role: "system" | "user" | "assistant";
+  text: string;
 };
+
+export type ProviderStreamEvent =
+  | {type: "text-delta"; text: string}
+  | {type: "reasoning-delta"; text: string};

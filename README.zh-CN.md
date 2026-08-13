@@ -19,8 +19,9 @@ Turnfold 是一个本地优先、用于管理分支式 AI 对话的仓库。
 - 基于 IndexedDB 的本地优先仓库，支持离线渲染和待同步队列。
 - 不可变消息、具名会话引用、分支导航和引用日志历史。
 - 多个可持久化草稿，以及可恢复的助手流式回答。
-- 同时支持浏览器直连和服务端模型 Provider。
-- 支持 OpenAI、Anthropic、Google、OpenAI-compatible、Ollama、llama.cpp、LM Studio 和 vLLM。
+- 内置不含凭据的 Provider 预置目录，来源于 KeyVault 并参考 OMP；所有预置都需要用户保存本地覆盖后才会启用。
+- 支持浏览器直连的自定义 Provider 与本地覆盖；凭据不会进入预置目录。
+- 使用手写 SSE 客户端支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Generative AI 协议。
 - 支持原生归档，以及 Codex CLI、Claude Code 和 OMP JSONL 格式的导入与导出。
 - 支持从多个文件、ZIP 压缩包或只读本地目录批量导入。
 - 面向稳定流式布局设计的增量 Markdown 和 MathJax 渲染。
@@ -30,13 +31,13 @@ Turnfold 当前规定每条消息只有一个父消息。因此它形成的是�
 
 ## 快速开始
 
-需要安装带有 Compose 插件的 Docker，并在打开浏览器的设备上运行 Ollama、LM Studio 等模型服务。
+需要安装带有 Compose 插件的 Docker，并准备一个允许当前浏览器发起请求的 AI 端点。
 
 ```sh
 docker compose up --build -d
 ```
 
-打开 <http://localhost:3000>。在模型设置中选择本地 Provider；如有需要，可调整浏览器能够访问的 Base URL。
+打开 <http://localhost:3000>，检查并保存一个预置 Provider 的本地覆盖以将其启用，或者添加自定义 Provider。模型 ID 可以手动填写，也可以刷新模型列表。
 
 默认 Compose 配置使用 `AUTH_MODE=single-user`，只适合 localhost 或可信私有网络。不要把该模式直接暴露到公网。
 
@@ -66,18 +67,14 @@ docker compose config
 | `BASE_PATH` | `/` | 运行时 URL 前缀；必须与同名 Docker 构建参数一致。 |
 | `HOME_URL` | 应用根路径 | 构建时设置的 Turnfold 标志跳转地址。 |
 | `CHAT_DATABASE_PATH` | `/data/turnfold.db` | SQLite 同步数据库。 |
-| `PUBLIC_PROVIDER_CATALOG_FILE` | `providers.json` | 暴露给浏览器的 Provider 目录。 |
 | `AUTH_MODE` | `forward-auth` | 可信本地环境使用 `single-user`；身份感知代理后方使用 `forward-auth`。 |
 | `SINGLE_USER_NAME` | `local` | 单用户模式显示的用户名。 |
 | `AUTH_ISSUER` | `turnfold:forward-auth` | 转发身份的稳定 issuer 标识。 |
-| `ACCOUNT_URL` | 空 | 可选的账户及 Provider 管理页面链接。 |
 | `PORTAL_URL` | 空 | 可选的兼容身份资料接口。 |
-| `KEY_VAULT_URL` | 空 | 可选的 Turnfold 兼容后端凭据服务。 |
-| `KEY_VAULT_TOKEN_FILE` | 空 | 凭据服务使用的服务令牌文件。 |
 
 `forward-auth` 接受 `X-Turnfold-Username` 和 `X-Turnfold-Sub`。为保持兼容，也支持 Authentik 的 `X-Authentik-Username` 和 `X-Authentik-Uid`。反向代理必须先移除客户端传入的不可信身份请求头，再写入自己的身份请求头。
 
-编辑 [providers.json](providers.json) 可以修改浏览器直连 Provider。Provider 凭据和端点覆盖配置只保存在当前浏览器中。
+内置预置目录只包含端点模板和模型 ID，不包含凭据，并且默认全部禁用。启用预置会创建同 ID 的本地覆盖。添加模型时，Turnfold 会列出尚未被同 ID 本地模型或发现模型覆盖的预置模型。Provider 覆盖、模型覆盖、自定义配置、发现的模型列表、请求头和凭据都只保存在当前浏览器中。模型请求由浏览器直接发送到所配置的端点，Bun 服务器不参与。Provider 因此必须允许 Turnfold 来源通过 CORS；访问局域网端点时，浏览器还可能请求本地网络访问权限。
 
 ## 部署到子路径
 
@@ -92,7 +89,7 @@ docker run --rm -p 3000:3000 -e BASE_PATH=/turnfold -v turnfold-data:/data turnf
 
 ## 数据与兼容性
 
-- 浏览器数据保存在 IndexedDB 中，无需服务器也可以继续使用。
+- 浏览器数据、Provider 配置和凭据保存在 IndexedDB 中，无需服务器也可以继续使用。
 - 已登录用户或单用户模式下的引用和不可变对象会同步到 SQLite。
 - 完整备份使用 `*.turnfold.json`，其中 `type` 为 `"turnfold-archive"`、`version` 为 `1`。
 - 旧的 `*.xiteng-chat.json` 归档仍然可以导入。
@@ -102,7 +99,7 @@ docker run --rm -p 3000:3000 -e BASE_PATH=/turnfold -v turnfold-data:/data turnf
 
 ## 安全
 
-不要提交 API Key、数据库、代理令牌或导出的对话归档。浏览器直连 Provider 的密钥保存在本地 IndexedDB 凭据库中。服务端密钥需要由外部凭据服务管理，不会保存在 Turnfold 的对话数据库中。
+不要提交 API Key、数据库或导出的对话归档。Provider 密钥保存在当前浏览器的 IndexedDB 中，绝不会发送给 Turnfold 服务器。与所有浏览器端密钥一样，同源脚本可以访问它们，因此部署时应使用严格的 CSP，并且只加载可信资源。
 
 请按照 [SECURITY.md](SECURITY.md) 中的说明私下报告安全漏洞。
 

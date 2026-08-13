@@ -83,15 +83,15 @@
     </section>
 
     <section class="principle" aria-label="Core principle">
-      <p data-lang="zh">本地先渲染，后台再同步。网络中断不会让对话消失，刷新页面也不必等待服务器才能看到历史。</p>
-      <p data-lang="en">Render locally, synchronize later. A broken connection does not erase the conversation, and a refresh does not wait for the server to show history.</p>
+      <p data-lang="zh">本地立即渲染，按需同步。网络中断不会让对话消失，刷新页面也不必等待服务器才能看到历史。</p>
+      <p data-lang="en">Render locally and sync when available. A broken connection does not erase the conversation, and a refresh does not wait for the server to show history.</p>
     </section>
 
     <section class="web-app-callout">
       <div>
         <p class="eyebrow"><span data-lang="zh">无需安装</span><span data-lang="en">No installation</span></p>
         <h2><span data-lang="zh">浏览器就是本地仓库</span><span data-lang="en">Your browser is the local repository</span></h2>
-        <p><span data-lang="zh">直接打开完整 Turnfold，配置浏览器可访问的 Provider 后开始聊天。消息、会话与草稿保存在当前浏览器；后端不是必需条件。</span><span data-lang="en">Open the complete Turnfold app, configure a provider your browser can reach, and start chatting. Messages, conversations, and drafts stay in this browser; no backend is required.</span></p>
+        <p><span data-lang="zh">直接打开完整 Turnfold，从默认禁用的预置中选择并保存本地覆盖以启用，或添加自定义 Provider；添加模型时还可选择未覆盖的预置模型。消息、会话、草稿、端点与凭据都保存在当前浏览器，后端不是必需条件。</span><span data-lang="en">Open the complete Turnfold app, enable a disabled-by-default preset by saving a local override, or add a custom provider. When adding models, you can choose from presets that have not been overridden. Messages, conversations, drafts, endpoints, and credentials stay in this browser; no backend is required.</span></p>
       </div>
       <a class="button primary inverse" href="app/"><span data-lang="zh">启动 Web App</span><span data-lang="en">Launch web app</span><b aria-hidden="true">↗</b></a>
     </section>
@@ -127,9 +127,9 @@
 
     <section class="start" id="start">
       <div>
-        <p class="eyebrow"><span data-lang="zh">一分钟启动</span><span data-lang="en">Start in a minute</span></p>
-        <h2><span data-lang="zh">把仓库留在自己手里</span><span data-lang="en">Keep the repository yours</span></h2>
-        <p><span data-lang="zh">需要 Docker Compose，以及浏览器所在设备上可访问的 Ollama、LM Studio 或其他模型服务。</span><span data-lang="en">You need Docker Compose and an Ollama, LM Studio, or other model endpoint reachable by your browser.</span></p>
+        <p class="eyebrow"><span data-lang="zh">一分钟自托管</span><span data-lang="en">Self-host in a minute</span></p>
+        <h2><span data-lang="zh">运行自己的 Turnfold</span><span data-lang="en">Run your own Turnfold</span></h2>
+        <p><span data-lang="zh">自托管 Web App 需要 Docker Compose；模型请求仍由浏览器直接发送到其可访问的 Ollama、LM Studio 或其他模型服务。</span><span data-lang="en">Self-hosting the web app requires Docker Compose. Model requests still go directly from the browser to a reachable Ollama, LM Studio, or other model endpoint.</span></p>
       </div>
       <div class="terminal">
         <div class="terminal-bar"><span></span><span></span><span></span><button type="button" id="copy-command"><span data-lang="zh">复制</span><span data-lang="en">Copy</span></button></div>
@@ -144,7 +144,7 @@ docker compose up --build -d</code></pre>
   <footer>
     <div class="brand"><img src="favicon.svg" alt="" width="30" height="30"><span>Turnfold</span></div>
     <p><span data-lang="zh">以 MIT License 开源。</span><span data-lang="en">Open source under the MIT License.</span></p>
-    <div><a href="https://github.com/liooil/turnfold/blob/main/README.zh-CN.md">Docs</a><a href="https://github.com/liooil/turnfold/issues">Issues</a><a href="https://github.com/liooil/turnfold">GitHub</a></div>
+    <div><a data-lang="zh" href="https://github.com/liooil/turnfold/blob/main/README.zh-CN.md">文档</a><a data-lang="en" href="https://github.com/liooil/turnfold/blob/main/README.md">Docs</a><a href="https://github.com/liooil/turnfold/issues">Issues</a><a href="https://github.com/liooil/turnfold">GitHub</a></div>
   </footer>
 </body>
 </html>

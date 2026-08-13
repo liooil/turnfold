@@ -19,8 +19,9 @@ Messages are immutable content-addressed objects. A conversation is a lightweigh
 - Local-first IndexedDB repository with offline rendering and an outbox.
 - Immutable messages, named conversation refs, branch navigation, and reflog history.
 - Multiple persistent drafts and recoverable partial assistant streams.
-- Browser-direct and server-side model providers.
-- OpenAI, Anthropic, Google, OpenAI-compatible, Ollama, llama.cpp, LM Studio, and vLLM support.
+- A credential-free Provider preset catalog derived from KeyVault and OMP, with every preset disabled until the user saves a local override.
+- Browser-direct custom Provider profiles and local overrides; credentials never enter the preset catalog.
+- Handwritten SSE clients for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Google Generative AI protocols.
 - Native archive plus Codex CLI, Claude Code, and OMP JSONL import/export.
 - Batch import from files, ZIP archives, or a read-only local directory.
 - Incremental Markdown and MathJax rendering designed for stable streaming layouts.
@@ -30,13 +31,13 @@ Turnfold currently models a message as having one parent. The result is a branch
 
 ## Quick start
 
-Requirements: Docker with the Compose plugin, plus a model server such as Ollama or LM Studio running on the machine where you open the browser.
+Requirements: Docker with the Compose plugin, plus an AI endpoint that permits requests from the browser where you open Turnfold.
 
 ```sh
 docker compose up --build -d
 ```
 
-Open <http://localhost:3000>. In model settings, choose the local provider and adjust its browser-visible Base URL if necessary.
+Open <http://localhost:3000>, then enable a preset by reviewing and saving its local override, or add a custom Provider. You can enter a model ID manually or refresh the model list.
 
 The default Compose configuration uses `AUTH_MODE=single-user`. It is intended for localhost or a trusted private network. Do not expose this mode to the public internet.
 
@@ -66,18 +67,14 @@ The development server listens on port `3000` by default. Set `PORT` to override
 | `BASE_PATH` | `/` | Runtime URL prefix. It must match the Docker build argument of the same name. |
 | `HOME_URL` | app root | Build-time destination of the Turnfold mark. |
 | `CHAT_DATABASE_PATH` | `/data/turnfold.db` | SQLite synchronization database. |
-| `PUBLIC_PROVIDER_CATALOG_FILE` | `providers.json` | Provider catalog exposed to the browser. |
 | `AUTH_MODE` | `forward-auth` | `single-user` for trusted local use or `forward-auth` behind an identity-aware proxy. |
 | `SINGLE_USER_NAME` | `local` | Display name used by single-user mode. |
 | `AUTH_ISSUER` | `turnfold:forward-auth` | Stable issuer identifier for forwarded identities. |
-| `ACCOUNT_URL` | empty | Optional account/provider-management link. |
 | `PORTAL_URL` | empty | Optional compatible identity profile endpoint. |
-| `KEY_VAULT_URL` | empty | Optional Turnfold-compatible backend credential service. |
-| `KEY_VAULT_TOKEN_FILE` | empty | Service token file for the credential service. |
 
 `forward-auth` accepts `X-Turnfold-Username` and `X-Turnfold-Sub`. Authentik's `X-Authentik-Username` and `X-Authentik-Uid` headers are also supported for compatibility. The reverse proxy must remove untrusted client-supplied identity headers before setting its own.
 
-Edit [providers.json](providers.json) to change browser-direct providers. Provider credentials and endpoint overrides are stored only in the current browser.
+The bundled preset catalog contains endpoint templates and model IDs, but no credentials, and presets are disabled by default. Enabling a preset creates a same-ID local override. When adding a model, Turnfold offers preset models that do not yet have a same-ID local or discovered override. Provider overrides, model overrides, custom profiles, discovered model lists, headers, and credentials are stored only in the current browser. Model requests go directly from that browser to the configured endpoint; the Bun server is not involved. The Provider must therefore allow the Turnfold origin through CORS. Browsers may also ask for local-network access before reaching a LAN endpoint.
 
 ## Hosting below a path
 
@@ -92,7 +89,7 @@ Then open <http://localhost:3000/turnfold/>.
 
 ## Data and compatibility
 
-- Browser data lives in IndexedDB and remains usable without the server.
+- Browser data, Provider profiles, and credentials live in IndexedDB and remain usable without the server.
 - Signed-in/single-user refs and immutable objects synchronize to SQLite.
 - Full backups use `*.turnfold.json` with `type: "turnfold-archive"` and `version: 1`.
 - Legacy `*.xiteng-chat.json` archives remain importable.
@@ -102,7 +99,7 @@ Keep backups before upgrading an early release.
 
 ## Security
 
-Never commit API keys, database files, proxy tokens, or exported conversation archives. Browser-direct provider keys remain in a local IndexedDB vault. Server-side keys require an external credential service and are not stored in Turnfold's conversation database.
+Never commit API keys, database files, or exported conversation archives. Provider keys remain in the current browser's IndexedDB and are never sent to the Turnfold server. As with any browser-held secret, scripts running under the same origin can access it; deploy with a strict CSP and only trusted assets.
 
 Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 

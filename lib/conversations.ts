@@ -3,7 +3,7 @@ import {mkdirSync} from "node:fs";
 import path from "node:path";
 import {Database} from "bun:sqlite";
 import {normalizeGenerationSettings, type GenerationSettings} from "./generation-settings";
-import type {ChatIdentity} from "./key-vault";
+import type {ChatIdentity} from "./identity";
 import type {
   Conversation,
   ConversationRefState,
@@ -322,7 +322,7 @@ function messagePath(identity: ChatIdentity, headId: string | null) {
   const seen = new Set<string>();
   let id = headId;
   while (id) {
-    if (seen.has(id) || reversed.length >= 500) throw new Error("Message history is cyclic or too long");
+    if (seen.has(id)) throw new Error("Message history is cyclic");
     seen.add(id);
     const row = ownedMessage(identity, id);
     if (!row) throw new Error("Conversation points to an unavailable message");

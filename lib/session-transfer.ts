@@ -465,7 +465,7 @@ export function serializeSessionTransfer(document: TransferDocument, format: Exc
   return serializeOmp(document);
 }
 
-export function serializeTurnfoldArchive(conversations: Conversation[], objects: StoredChatMessage[], workingItems: WorkingItem[]) {
+export function serializeTurnfoldArchive(conversations: Array<Omit<Conversation, "messages"> & {messages?: StoredChatMessage[]}>, objects: StoredChatMessage[], workingItems: WorkingItem[]) {
   return JSON.stringify({
     type: "turnfold-archive",
     version: 1,
