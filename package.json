@@ -1,0 +1,39 @@
+{
+  "name": "turnfold",
+  "version": "0.1.0",
+  "description": "A local-first repository for branching AI conversations.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liooil/turnfold.git"
+  },
+  "bugs": {
+    "url": "https://github.com/liooil/turnfold/issues"
+  },
+  "homepage": "https://github.com/liooil/turnfold#readme",
+  "scripts": {
+    "dev": "bun --hot src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "bun run typecheck && bun run build.ts",
+    "start": "bun src/server.ts",
+    "test": "bun test",
+    "test:history": "bun run build && bun history.test.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.36",
+    "@ai-sdk/google": "4.0.39",
+    "@ai-sdk/openai": "4.0.36",
+    "@ai-sdk/openai-compatible": "3.0.28",
+    "ai": "7.0.58",
+    "dompurify": "3.2.6",
+    "fflate": "0.8.2",
+    "marked": "15.0.12",
+    "node-fetch": "3.3.2",
+    "proxy-agent": "8.0.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.5",
+    "mathjax": "4.1.3",
+    "typescript": "5.9.3"
+  }
+}

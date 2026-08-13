@@ -1,0 +1,29 @@
+services:
+  turnfold:
+    build:
+      context: .
+      args:
+        BASE_PATH: /
+    image: turnfold:local
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      AUTH_MODE: single-user
+      SINGLE_USER_NAME: local
+      BASE_PATH: /
+      CHAT_DATABASE_PATH: /data/turnfold.db
+      PUBLIC_PROVIDER_CATALOG_FILE: /app/providers.json
+    volumes:
+      - turnfold-data:/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  turnfold-data:

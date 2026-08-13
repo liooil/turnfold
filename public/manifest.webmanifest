@@ -1,0 +1,20 @@
+{
+  "id": "__APP_ROOT__",
+  "name": "Turnfold",
+  "short_name": "Turnfold",
+  "description": "A local-first repository for branching AI conversations.",
+  "start_url": "__APP_ROOT__",
+  "scope": "__APP_ROOT__",
+  "display": "standalone",
+  "launch_handler": {"client_mode": "navigate-existing"},
+  "background_color": "#f4f4f0",
+  "theme_color": "#171717",
+  "orientation": "any",
+  "lang": "zh-CN",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {"src": "__BASE_PATH__/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "__BASE_PATH__/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "__BASE_PATH__/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

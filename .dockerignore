@@ -1,0 +1,7 @@
+node_modules
+dist
+.next
+package-lock.json
+npm-debug.log
+data
+run
