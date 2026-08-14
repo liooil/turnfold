@@ -1,10 +1,13 @@
-import type {Conversation, ConversationRefState, ConversationSummary, RepositoryFetch, RepositoryRefUpdate, StoredChatMessage, WorkingItem} from "./conversation-types";
-import {normalizeGenerationSettings} from "./generation-settings";
-
-// Keep the original database identifiers so existing installations upgrade without losing local history.
-const databaseName = "xiteng-chat-offline";
-const databaseVersion = 3;
-const activeProfileKey = "xiteng-chat-offline-profile";
+import type {Conversation, ConversationRefState, ConversationSummary, RepositoryFetch, RepositoryRefUpdate, StoredChatMessage, WorkingItem} from "../../shared/conversation-types";
+import {normalizeGenerationSettings} from "../../shared/generation-settings";
+import {
+  activeOfflineProfileKey as activeProfileId,
+  offlineTransaction as transaction,
+  openOfflineDatabase as openDatabase,
+  profileCacheKey,
+  setActiveOfflineProfileKey
+} from "./offline-database";
+import {queueConversationChange} from "./pending-changes";
 
 type CachedProfile<T = unknown> = {
   id: string;
@@ -45,73 +48,6 @@ export type RepositoryOutboxRecord = {
   updatedAt: string;
 };
 
-export type PendingConversationChange = {
-  cacheKey: string;
-  profileId: string;
-  conversationId: string;
-  requestPath?: string;
-  method: "POST" | "PUT" | "PATCH" | "DELETE";
-  body?: string;
-  createdAt: string;
-};
-
-function openDatabase() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(databaseName, databaseVersion);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains("profiles")) database.createObjectStore("profiles", {keyPath: "id"});
-      if (!database.objectStoreNames.contains("conversations")) {
-        const conversations = database.createObjectStore("conversations", {keyPath: "cacheKey"});
-        conversations.createIndex("profileId", "profileId");
-      }
-      if (!database.objectStoreNames.contains("pending")) {
-        const pending = database.createObjectStore("pending", {keyPath: "cacheKey"});
-        pending.createIndex("profileId", "profileId");
-      }
-      if (!database.objectStoreNames.contains("messages")) {
-        const messages = database.createObjectStore("messages", {keyPath: "cacheKey"});
-        messages.createIndex("profileId", "profileId");
-      }
-      if (!database.objectStoreNames.contains("working")) {
-        const working = database.createObjectStore("working", {keyPath: "cacheKey"});
-        working.createIndex("profileId", "profileId");
-        working.createIndex("profileConversation", ["profileId", "conversationId"]);
-      }
-      if (!database.objectStoreNames.contains("reflog")) {
-        const reflog = database.createObjectStore("reflog", {keyPath: "cacheKey"});
-        reflog.createIndex("profileConversation", ["profileId", "conversationId"]);
-      }
-      if (!database.objectStoreNames.contains("repositoryOutbox")) {
-        const outbox = database.createObjectStore("repositoryOutbox", {keyPath: "cacheKey"});
-        outbox.createIndex("profileId", "profileId");
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Unable to open offline history"));
-  });
-}
-
-async function transaction<T>(storeName: string, mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequest<T>) {
-  const database = await openDatabase();
-  return new Promise<T>((resolve, reject) => {
-    const current = database.transaction(storeName, mode);
-    const request = run(current.objectStore(storeName));
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error(`Offline ${storeName} operation failed`));
-    current.oncomplete = () => database.close();
-    current.onerror = () => reject(current.error || new Error(`Offline ${storeName} transaction failed`));
-  });
-}
-
-function activeProfileId() {
-  return window.localStorage.getItem(activeProfileKey) || "";
-}
-
-function profileCacheKey(profileId: string, id: string) {
-  return `${profileId}:${id}`;
-}
-
 function normalizedCachedMessage(message: Partial<StoredChatMessage>, parentMessageId: string | null, timestamp: string): StoredChatMessage {
   const role = message.role || "user";
   return {
@@ -146,7 +82,7 @@ function normalizedConversationSummary(summary: Partial<ConversationSummary> & {
 }
 
 export function activateOfflineProfile(profileId: string) {
-  window.localStorage.setItem(activeProfileKey, profileId);
+  setActiveOfflineProfileKey(profileId);
 }
 
 export function activeOfflineProfileId() {
@@ -762,33 +698,4 @@ export async function applyRepositoryPushResults(results: Array<{conversationId:
       await cacheConversation({...local, upstreamHeadMessageId: result.ref.headMessageId, headVersion: result.ref.headVersion, metadataVersion: result.ref.metadataVersion});
     }
   }
-}
-
-export async function queueConversationChange(change: Omit<PendingConversationChange, "cacheKey" | "profileId" | "createdAt">) {
-  const profileId = activeProfileId();
-  if (!profileId) return;
-  const record: PendingConversationChange = {
-    ...change,
-    cacheKey: `${profileId}:${change.conversationId}:${change.method}:${change.requestPath || "conversation"}`,
-    profileId,
-    createdAt: new Date().toISOString()
-  };
-  await transaction<IDBValidKey>("pending", "readwrite", (store) => store.put(record));
-}
-
-export async function listPendingConversationChanges() {
-  const profileId = activeProfileId();
-  if (!profileId) return [];
-  const database = await openDatabase();
-  return new Promise<PendingConversationChange[]>((resolve, reject) => {
-    const current = database.transaction("pending", "readonly");
-    const request = current.objectStore("pending").index("profileId").getAll(profileId);
-    request.onsuccess = () => resolve(request.result.sort((left, right) => left.createdAt.localeCompare(right.createdAt)));
-    request.onerror = () => reject(request.error || new Error("Unable to read pending history changes"));
-    current.oncomplete = () => database.close();
-  });
-}
-
-export async function removePendingConversationChange(cacheKey: string) {
-  await transaction<undefined>("pending", "readwrite", (store) => store.delete(cacheKey));
 }

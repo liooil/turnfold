@@ -1,4 +1,5 @@
-import type {ProviderCatalogSource, ProviderPreset, ProviderProfile, ProviderProtocol} from "./provider-types";
+import type {ProviderCatalogSource, ProviderPreset, ProviderProfile, ProviderProtocol} from "../../shared/provider-types";
+import {embeddedModelsDevCatalog, modelsDevProviderModels} from "./models-dev-catalog";
 
 type PresetInput = {
   id: string;
@@ -14,6 +15,12 @@ type PresetInput = {
 
 function preset(input: PresetInput): ProviderPreset {
   const modelIds = [...new Set([input.defaultModel, ...(input.ompModels || [])].filter(Boolean))];
+  const catalogModels = modelsDevProviderModels(embeddedModelsDevCatalog, input.id, "preset");
+  const catalogById = new Map(catalogModels.map((model) => [model.id, model]));
+  const models = modelIds.map((id) => catalogById.get(id) || {id, name: id, source: "preset" as const});
+  for (const model of catalogModels) if (!modelIds.includes(model.id)) models.push(model);
+  const catalogSources = input.sources || ["keyvault", "omp"];
+  if (catalogModels.length && !catalogSources.includes("models.dev")) catalogSources.push("models.dev");
   return {
     id: input.id,
     name: input.name,
@@ -22,15 +29,16 @@ function preset(input: PresetInput): ProviderPreset {
     auth: input.auth || {type: "bearer"},
     headers: input.headers || {},
     discoveryUrl: "",
-    models: modelIds.map((id) => ({id, name: id, source: "preset" as const})),
+    models,
     defaultModel: input.defaultModel,
-    catalogSources: input.sources || ["keyvault", "omp"]
+    catalogSources
   };
 }
 
 // This is a credential-free, browser-safe seed catalog. KeyVault supplies the
 // complete baseline; OMP supplies compatible current model aliases and local
-// endpoint conventions where its catalog has a matching provider.
+// endpoint conventions. The embedded models.dev subset adds rich metadata for
+// twelve curated models without making application startup depend on a network.
 export const providerPresets: ProviderPreset[] = [
   preset({id: "openai", name: "OpenAI", protocol: "openai-responses", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4", ompModels: ["gpt-5.5"]}),
   preset({id: "anthropic", name: "Anthropic", protocol: "anthropic", baseUrl: "https://api.anthropic.com", auth: {type: "header", header: "x-api-key"}, defaultModel: "claude-sonnet-4-6", ompModels: ["claude-opus-4-8"]}),

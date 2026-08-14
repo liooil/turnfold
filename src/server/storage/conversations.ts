@@ -2,8 +2,8 @@ import {createHash, randomUUID} from "node:crypto";
 import {mkdirSync} from "node:fs";
 import path from "node:path";
 import {Database} from "bun:sqlite";
-import {normalizeGenerationSettings, type GenerationSettings} from "./generation-settings";
-import type {ChatIdentity} from "./identity";
+import {normalizeGenerationSettings, type GenerationSettings} from "../../shared/generation-settings";
+import type {ChatIdentity} from "../identity";
 import type {
   Conversation,
   ConversationRefState,
@@ -14,8 +14,8 @@ import type {
   RepositoryFetch,
   RepositoryRefUpdate,
   StoredChatMessage
-} from "./conversation-types";
-import {canonicalMessage} from "./message-object";
+} from "../../shared/conversation-types";
+import {canonicalMessage} from "../../shared/message-object";
 
 const databasePath = process.env.CHAT_DATABASE_PATH || "/data/turnfold.db";
 let database: Database | undefined;

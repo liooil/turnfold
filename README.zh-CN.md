@@ -20,6 +20,7 @@ Turnfold 是一个本地优先、用于管理分支式 AI 对话的仓库。
 - 不可变消息、具名会话引用、分支导航和引用日志历史。
 - 多个可持久化草稿，以及可恢复的助手流式回答。
 - 内置不含凭据的 Provider 预置目录，来源于 KeyVault 并参考 OMP；所有预置都需要用户保存本地覆盖后才会启用。
+- 内嵌 Models.dev 的 12 个精选模型；完整目录只会在用户明确点击后下载或更新，并保存在当前浏览器。
 - 支持浏览器直连的自定义 Provider 与本地覆盖；凭据不会进入预置目录。
 - 使用手写 SSE 客户端支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Generative AI 协议。
 - 支持原生归档，以及 Codex CLI、Claude Code 和 OMP JSONL 格式的导入与导出。
@@ -57,6 +58,8 @@ bun run build
 docker compose config
 ```
 
+源码依赖方向固定为 `client -> shared <- server`。模块职责与兼容边界见 [docs/architecture.md](docs/architecture.md)。
+
 开发服务器默认监听 `3000` 端口，可通过 `PORT` 修改。
 
 ## 配置
@@ -75,6 +78,8 @@ docker compose config
 `forward-auth` 接受 `X-Turnfold-Username` 和 `X-Turnfold-Sub`。为保持兼容，也支持 Authentik 的 `X-Authentik-Username` 和 `X-Authentik-Uid`。反向代理必须先移除客户端传入的不可信身份请求头，再写入自己的身份请求头。
 
 内置预置目录只包含端点模板和模型 ID，不包含凭据，并且默认全部禁用。启用预置会创建同 ID 的本地覆盖。添加模型时，Turnfold 会列出尚未被同 ID 本地模型或发现模型覆盖的预置模型。Provider 覆盖、模型覆盖、自定义配置、发现的模型列表、请求头和凭据都只保存在当前浏览器中。模型请求由浏览器直接发送到所配置的端点，Bun 服务器不参与。Provider 因此必须允许 Turnfold 来源通过 CORS；访问局域网端点时，浏览器还可能请求本地网络访问权限。
+
+Turnfold 内嵌来自 [Models.dev](https://models.dev/) 的 12 个精选模型元数据。完整 Models.dev 目录不会自动获取；用户可在 Provider 设置中明确点击下载或更新，数据随后保存在独立的浏览器 IndexedDB 中。下载的目录条目只会作为匹配 Provider 的模型模板，并且不包含任何凭据。
 
 ## 部署到子路径
 

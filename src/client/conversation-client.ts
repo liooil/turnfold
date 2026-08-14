@@ -6,8 +6,8 @@ import type {
   MessageOrigin,
   RepositoryFetch,
   StoredChatMessage
-} from "./conversation-types";
-import type {GenerationSettings} from "./generation-settings";
+} from "../shared/conversation-types";
+import type {GenerationSettings} from "../shared/generation-settings";
 import {
   applyRepositoryFetch,
   applyRepositoryPushResults,
@@ -17,16 +17,14 @@ import {
   createLocalConversation,
   deleteLocalConversation,
   listCachedObjectIds,
-  listPendingConversationChanges,
   loadCachedConversation,
   loadCachedConversationSummaries,
   moveLocalConversationHead,
-  queueConversationChange,
   queueLocalRefUpdate,
-  removePendingConversationChange,
   repositoryPushPayload
-} from "./offline-history";
-import {repositoryPushBatches} from "./repository-push-batches";
+} from "./storage/offline-history";
+import {listPendingConversationChanges, queueConversationChange, removePendingConversationChange} from "./storage/pending-changes";
+import {repositoryPushBatches} from "../shared/repository-push-batches";
 
 declare const __TURNFOLD_BASE_PATH__: string;
 

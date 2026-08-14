@@ -23,7 +23,8 @@ ENV BASE_PATH=/
 COPY --from=dependencies --chown=bun:bun /app/node_modules ./node_modules
 COPY --from=builder --chown=bun:bun /app/dist ./dist
 COPY --from=builder --chown=bun:bun /app/src/server.ts ./src/server.ts
-COPY --from=builder --chown=bun:bun /app/lib ./lib
+COPY --from=builder --chown=bun:bun /app/src/server ./src/server
+COPY --from=builder --chown=bun:bun /app/src/shared ./src/shared
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
 EXPOSE 3000
 ENTRYPOINT ["/entrypoint.sh"]

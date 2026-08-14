@@ -3,13 +3,24 @@ export type ProviderProtocol = "openai-chat" | "openai-responses" | "anthropic" 
 export type ProviderModel = {
   id: string;
   name: string;
+  description?: string;
+  family?: string;
   contextWindow?: number;
   maxTokens?: number;
   input?: string[];
+  output?: string[];
   reasoning?: boolean;
+  reasoningOptions?: Array<Record<string, unknown>>;
+  toolCall?: boolean;
+  structuredOutput?: boolean;
+  temperature?: boolean;
+  openWeights?: boolean;
+  releaseDate?: string;
+  lastUpdated?: string;
+  status?: string;
   ownedBy?: string;
   pricing?: Record<string, unknown>;
-  source: "manual" | "discovered" | "preset";
+  source: "manual" | "discovered" | "preset" | "catalog";
 };
 
 export type ProviderProfile = {
@@ -26,7 +37,7 @@ export type ProviderProfile = {
   updatedAt: string;
 };
 
-export type ProviderCatalogSource = "keyvault" | "omp";
+export type ProviderCatalogSource = "keyvault" | "omp" | "models.dev";
 
 export type ProviderPreset = Omit<ProviderProfile, "createdAt" | "updatedAt"> & {
   catalogSources: ProviderCatalogSource[];

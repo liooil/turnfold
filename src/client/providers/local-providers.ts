@@ -1,4 +1,4 @@
-import type {ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret} from "./provider-types";
+import type {ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret} from "../../shared/provider-types";
 import {withProviderPresetModels} from "./provider-presets";
 
 export type LocalCredential = {

@@ -20,6 +20,7 @@ Messages are immutable content-addressed objects. A conversation is a lightweigh
 - Immutable messages, named conversation refs, branch navigation, and reflog history.
 - Multiple persistent drafts and recoverable partial assistant streams.
 - A credential-free Provider preset catalog derived from KeyVault and OMP, with every preset disabled until the user saves a local override.
+- An embedded twelve-model Models.dev subset, with an explicit browser-only action to download or update the complete catalog.
 - Browser-direct custom Provider profiles and local overrides; credentials never enter the preset catalog.
 - Handwritten SSE clients for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Google Generative AI protocols.
 - Native archive plus Codex CLI, Claude Code, and OMP JSONL import/export.
@@ -57,6 +58,8 @@ bun run build
 docker compose config
 ```
 
+The source dependency direction is `client -> shared <- server`. See [docs/architecture.md](docs/architecture.md) for the module and compatibility boundaries.
+
 The development server listens on port `3000` by default. Set `PORT` to override it.
 
 ## Configuration
@@ -75,6 +78,8 @@ The development server listens on port `3000` by default. Set `PORT` to override
 `forward-auth` accepts `X-Turnfold-Username` and `X-Turnfold-Sub`. Authentik's `X-Authentik-Username` and `X-Authentik-Uid` headers are also supported for compatibility. The reverse proxy must remove untrusted client-supplied identity headers before setting its own.
 
 The bundled preset catalog contains endpoint templates and model IDs, but no credentials, and presets are disabled by default. Enabling a preset creates a same-ID local override. When adding a model, Turnfold offers preset models that do not yet have a same-ID local or discovered override. Provider overrides, model overrides, custom profiles, discovered model lists, headers, and credentials are stored only in the current browser. Model requests go directly from that browser to the configured endpoint; the Bun server is not involved. The Provider must therefore allow the Turnfold origin through CORS. Browsers may also ask for local-network access before reaching a LAN endpoint.
+
+Turnfold embeds metadata for twelve curated models from [Models.dev](https://models.dev/). The complete Models.dev catalog is never fetched automatically: users can explicitly download or update it in Provider settings, where it is stored in a separate browser IndexedDB database. Downloaded catalog entries are offered as templates when adding a model to a matching Provider and never contain credentials.
 
 ## Hosting below a path
 

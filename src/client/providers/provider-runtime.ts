@@ -1,5 +1,5 @@
-import type {GenerationSettings} from "./generation-settings";
-import type {ProviderMessage, ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret, ProviderStreamEvent} from "./provider-types";
+import type {GenerationSettings} from "../../shared/generation-settings";
+import type {ProviderMessage, ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret, ProviderStreamEvent} from "../../shared/provider-types";
 
 type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type JsonRecord = Record<string, unknown>;

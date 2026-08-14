@@ -6,7 +6,7 @@ import path from "node:path";
 import {spawn} from "node:child_process";
 import {Database} from "bun:sqlite";
 import {createHash} from "node:crypto";
-import {createMessageObject} from "./lib/message-object.ts";
+import {createMessageObject} from "./src/shared/message-object.ts";
 
 const root = process.cwd();
 const temporaryDirectory = mkdtempSync(path.join(tmpdir(), "turnfold-history-test-"));

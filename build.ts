@@ -10,6 +10,7 @@ const basePath = normalizedBasePath(process.env.BASE_PATH);
 const appRoot = basePath ? `${basePath}/` : "/";
 const homeUrl = process.env.HOME_URL?.trim() || appRoot;
 const outputDirectory = process.env.OUTPUT_DIR?.trim() || "dist";
+const styleSources = ["src/styles/foundation.css", "src/styles/components.css", "src/styles/responsive.css"];
 
 rmSync(outputDirectory, {recursive: true, force: true});
 mkdirSync(`${outputDirectory}/assets`, {recursive: true});
@@ -29,12 +30,13 @@ if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
-const version = Bun.hash(`${readFileSync("src/client.ts", "utf8")}\0${readFileSync("src/styles.css", "utf8")}`).toString(36);
+const stylesheet = styleSources.map((filename) => readFileSync(filename, "utf8").trim()).join("\n\n") + "\n";
+const version = Bun.hash(`${readFileSync(`${outputDirectory}/assets/client.js`, "utf8")}\0${stylesheet}`).toString(36);
 writeFileSync(`${outputDirectory}/index.html`, readFileSync("src/index.html", "utf8")
   .replaceAll("__ASSET_VERSION__", version)
   .replaceAll("__BASE_PATH__", basePath)
   .replaceAll("__APP_ROOT__", appRoot));
-cpSync("src/styles.css", `${outputDirectory}/styles.css`);
+writeFileSync(`${outputDirectory}/styles.css`, stylesheet);
 cpSync("public", outputDirectory, {recursive: true});
 writeFileSync(`${outputDirectory}/manifest.webmanifest`, readFileSync("public/manifest.webmanifest", "utf8")
   .replaceAll("__BASE_PATH__", basePath)

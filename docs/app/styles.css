@@ -97,6 +97,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .provider-preset-catalog > summary em { display: grid; min-width: 24px; height: 24px; place-items: center; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 9px; font-style: normal; }
 .provider-preset-catalog > div { display: grid; gap: 6px; margin-top: 6px; }
 .provider-preset-entry { background: transparent; }
+.models-dev-catalog-copy { margin: 0; padding: 0 10px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.models-dev-catalog-error { margin: 0; padding: 0 10px; color: var(--danger); font-size: 10px; }
+.models-dev-catalog-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 10px 4px; }
+.models-dev-catalog-actions button:disabled { cursor: wait; opacity: .62; }
+.provider-model-search { margin-top: 8px; }
 .model-picker-empty { height: 36px; border: 1px solid var(--line); border-radius: 11px; padding: 0 12px; background: rgba(255,255,255,.72); color: var(--text); cursor: pointer; }
 .model-picker { position: relative; }
 .model-picker > summary { display: flex; min-width: 190px; max-width: 290px; height: 36px; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line); border-radius: 11px; padding: 0 10px; background: rgba(255,255,255,.72); color: var(--text); cursor: pointer; list-style: none; }

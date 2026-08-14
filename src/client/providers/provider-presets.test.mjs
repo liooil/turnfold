@@ -41,8 +41,9 @@ describe("Provider preset catalog", () => {
       models: []
     };
     const hydrated = withProviderPresetModels(base);
-    expect(hydrated.models.map((model) => model.id)).toEqual(["gpt-5.4", "gpt-5.5"]);
-    expect(availableProviderPresetModels(hydrated).map((model) => model.id)).toEqual(["gpt-5.4", "gpt-5.5"]);
+    const presetModelIds = getProviderPreset("openai").models.map((model) => model.id);
+    expect(hydrated.models.map((model) => model.id)).toEqual(presetModelIds);
+    expect(availableProviderPresetModels(hydrated).map((model) => model.id)).toEqual(presetModelIds);
 
     const overridden = withProviderPresetModels({
       ...hydrated,
@@ -51,6 +52,6 @@ describe("Provider preset catalog", () => {
     expect(overridden.models.filter((model) => model.id === "gpt-5.4")).toEqual([
       {id: "gpt-5.4", name: "My GPT", source: "manual"}
     ]);
-    expect(availableProviderPresetModels(overridden).map((model) => model.id)).toEqual(["gpt-5.5"]);
+    expect(availableProviderPresetModels(overridden).map((model) => model.id)).toEqual(presetModelIds.filter((id) => id !== "gpt-5.4"));
   });
 });
