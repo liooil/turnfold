@@ -10,49 +10,29 @@ import {
 } from "./conversation-client";
 import {conversationIdFromHash} from "../shared/conversation-hash";
 import {conversationTitlePrompt, normalizeGeneratedConversationTitle, untitledConversationLabel} from "../shared/conversation-title";
-import type {Conversation, ConversationSummary, MessageCompletion, ResponseMetadata, StoredChatMessage, WorkingItem} from "../shared/conversation-types";
+import type {Conversation, MessageCompletion, ResponseMetadata, StoredChatMessage, WorkingItem} from "../shared/conversation-types";
 import {defaultGenerationSettings, type GenerationSettings} from "../shared/generation-settings";
 import {
   activateOfflineProfile,
   cachedLastFetchAt,
   cacheChatConfig,
-  listCachedConversationRefs,
   listCachedMessages,
-  listWorkingItems,
   loadCachedChatConfig,
-  mergeOfflineProfiles,
-  removeWorkingItem,
-  saveWorkingItem
+  mergeOfflineProfiles
 } from "./storage/offline-history";
 import {
-  deleteLocalCredential,
-  deleteLocalProviderProfile,
   listLocalCredentials,
   listLocalProviderProfiles,
   migrateLegacyProviderProfile,
-  saveLocalCredential,
   saveLocalProviderProfile
 } from "./providers/local-providers";
 import type {ChatProfile} from "../shared/profile-types";
-import {getEmbeddedProviderProfile, isEmbeddedProvider, selectableCatalogProviderProfiles} from "./providers/embedded-providers";
-import {autoDetectProvider} from "./providers/provider-auto-detect";
 import {discoverProviderModels, streamProvider} from "./providers/provider-runtime";
-import {embeddedModelsDevCatalog, embeddedModelsDevModelCount, modelsDevModel, modelsDevModelCount} from "./providers/models-dev-catalog";
-import {deleteStoredModelsDevCatalog, downloadModelsDevCatalog, loadStoredModelsDevCatalog} from "./providers/models-dev-storage";
-import type {ProviderModel, ProviderProfile, ProviderProtocol} from "../shared/provider-types";
+import {embeddedModelsDevCatalog, embeddedModelsDevModelCount, modelsDevModelCount} from "./providers/models-dev-catalog";
+import {loadStoredModelsDevCatalog} from "./providers/models-dev-storage";
 import {responseMetadata} from "../shared/response-metadata";
 import {createMessageObject} from "../shared/message-object";
-import {
-  conversationTransferDocument,
-  parseSessionTransfer,
-  serializeSessionTransfer,
-  serializeTurnfoldArchive,
-  type SessionTransferFormat,
-  type TransferDocument,
-  type TransferNode
-} from "../shared/session-transfer";
 import {rootEditAlternativesInGraph} from "../shared/message-graph";
-import {applyImportTitleTemplate, importFileStem, importSourceFolder} from "../shared/import-title-template";
 import {shouldOpenFullscreenEditor} from "./fullscreen-editor";
 import {createInitialAppState, type CachedChatBootstrap, type ChatProvider, type HashNavigationMode, type ServerChatConfig} from "./app-state";
 import {appUrl, basePath, homeUrl} from "./environment";
@@ -60,12 +40,16 @@ import {icons} from "./icons";
 import {migrateLegacyPreferences} from "./preferences";
 import {createConversationSelectors, messagePartText} from "./conversation-selectors";
 import {createModelSelection} from "./model-selection";
-import {expandImportFiles, filesFromDirectory, type ImportSourceFile} from "./session-files";
 import {createMarkdownRenderer, finishingMarkdownMessages, markdownRenderMetrics, streamingMarkdownCaches} from "./markdown-renderer";
 import {createDraftModel, draftLabel, messageNow, requestAssistantReplyForSubmission, workingItemText} from "./draft-model";
 import {updateConversationHash} from "./navigation";
 import {createSettingsView} from "./settings-view";
 import {reconcileElement, reconcileHtml, type DomReconcileOptions} from "./dom-reconciler";
+import {workingItemRepository} from "./repository/repositories";
+import {createProviderController} from "./providers/provider-controller";
+import {validProviderUrl} from "./providers/provider-validation";
+import {createHistoryView} from "./history-view";
+import {createSessionTransferController} from "./session-transfer-controller";
 
 type StreamEvent = {type: string; text?: string; error?: string; metadata?: ResponseMetadata};
 type StreamRequestContext = {provider: ChatProvider; model: string; conversationId: string; generationSettings: GenerationSettings};
@@ -103,6 +87,26 @@ const {renderProviderSettings, renderSettingsPage} = createSettingsView(state, {
   renderEffortControl,
   renderModelOption
 });
+const {renderHistory, renderHistoryItems} = createHistoryView(state, escapeHtml);
+const providerController = createProviderController(state, {
+  root,
+  render: renderApp,
+  localCredential,
+  settingsForProvider,
+  scheduleSettingsSave,
+  discoverProvider: discoverLocalProvider,
+  reportError: showError
+});
+const sessionTransferController = createSessionTransferController(state, {
+  root,
+  escapeHtml,
+  uuid,
+  render: renderApp,
+  conversationObjects: conversationGraphObjects,
+  selectConversation: (id) => selectConversation(id),
+  scheduleSync: scheduleRepositorySync,
+  reportError: showError
+});
 
 function uuid() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -115,212 +119,6 @@ function uuid() {
 
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[character]!);
-}
-
-function downloadText(filename: string, text: string, type = "application/x-ndjson") {
-  const url = URL.createObjectURL(new Blob([text], {type}));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function exportFilename(name: string, suffix: string) {
-  const safe = (String(name || "").trim() || "turnfold").replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "turnfold";
-  return `${safe}.${suffix}`;
-}
-
-async function exportSessions(format: SessionTransferFormat) {
-  if (format === "turnfold") {
-    const [conversations, objects, workingItems] = await Promise.all([listCachedConversationRefs(), listCachedMessages(), listWorkingItems()]);
-    downloadText(exportFilename("turnfold-backup", "turnfold.json"), serializeTurnfoldArchive(conversations, objects, workingItems), "application/json");
-    return;
-  }
-  if (!state.conversation) throw new Error("当前没有可导出的会话");
-  const document = conversationTransferDocument(state.conversation, conversationGraphObjects(state.conversation));
-  downloadText(exportFilename(state.conversation.name, `${format}.jsonl`), serializeSessionTransfer(document, format));
-}
-
-async function materializeTransferNodes(document: TransferDocument) {
-  const mappedIds = new Map<string, string>();
-  const stored = new Map<string, StoredChatMessage>();
-  const pending = new Map(document.nodes.map((node) => [node.sourceId, node]));
-  while (pending.size) {
-    let progressed = false;
-    for (const [sourceId, node] of [...pending]) {
-      if (node.parentSourceId && pending.has(node.parentSourceId) && !mappedIds.has(node.parentSourceId)) continue;
-      const parentMessageId = node.parentSourceId ? mappedIds.get(node.parentSourceId) || null : null;
-      const message = await createMessageObject({
-        parentMessageId,
-        role: node.role,
-        parts: node.parts,
-        origin: node.origin || (node.role === "user" ? {type: "user", sourceMessageId: sourceId} : {type: "legacy"}),
-        completion: node.completion || {status: "complete"},
-        createdAt: node.createdAt,
-        completedAt: node.completedAt,
-        ...(node.metadata ? {metadata: node.metadata} : {})
-      }, state.identityKey);
-      mappedIds.set(sourceId, message.id);
-      stored.set(message.id, message);
-      pending.delete(sourceId);
-      progressed = true;
-    }
-    if (!progressed) throw new Error("导入文件的消息父节点形成循环");
-  }
-  return {mappedIds, messages: [...stored.values()]};
-}
-
-function transferSessionSourceIds(document: TransferDocument, headSourceId: string | null) {
-  if (!headSourceId) return new Set<string>();
-  const adjacent = new Map<string, Set<string>>();
-  const connect = (left: string, right: string) => {
-    if (!adjacent.has(left)) adjacent.set(left, new Set());
-    if (!adjacent.has(right)) adjacent.set(right, new Set());
-    adjacent.get(left)!.add(right);
-    adjacent.get(right)!.add(left);
-  };
-  for (const node of document.nodes) if (node.parentSourceId) connect(node.sourceId, node.parentSourceId);
-  const selected = new Set<string>();
-  const pending = [headSourceId];
-  while (pending.length) {
-    const id = pending.pop()!;
-    if (selected.has(id)) continue;
-    selected.add(id);
-    for (const neighbor of adjacent.get(id) || []) pending.push(neighbor);
-  }
-  return selected;
-}
-
-function uniqueImportedName(source: string, reserved: Set<string>) {
-  const base = String(source || "").trim() || "导入的会话";
-  if (!reserved.has(base)) {
-    reserved.add(base);
-    return base;
-  }
-  let index = 2;
-  while (reserved.has(`${base} (导入 ${index})`)) index += 1;
-  const name = `${base} (导入 ${index})`;
-  reserved.add(name);
-  return name;
-}
-
-async function importTransferDocument(document: TransferDocument, reservedNames: Set<string>, source: string, firstIndex: number) {
-  if (!document.sessions.length) throw new Error("导入文件中没有会话");
-  const {mappedIds, messages} = await materializeTransferNodes(document);
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
-  const conversationIds = new Map<string, string>();
-  const imported: Conversation[] = [];
-  for (const [sessionIndex, session] of document.sessions.entries()) {
-    const headMessageId = session.headSourceId ? mappedIds.get(session.headSourceId) || null : null;
-    const sessionMessages = [...transferSessionSourceIds(document, session.headSourceId)]
-      .map((sourceId) => mappedIds.get(sourceId))
-      .filter((id): id is string => Boolean(id))
-      .map((id) => messagesById.get(id))
-      .filter((message): message is StoredChatMessage => Boolean(message));
-    const sourceTitle = session.name.trim() || "导入的会话";
-    const importedTitle = applyImportTitleTemplate(state.importTitleTemplate, {
-      title: sourceTitle,
-      format: document.format,
-      file: importFileStem(source.replaceAll("\\", "/").split("/").at(-1)?.trim() || source),
-      folder: importSourceFolder(source),
-      date: session.createdAt.slice(0, 10),
-      model: session.model,
-      provider: session.providerId,
-      index: firstIndex + sessionIndex
-    });
-    const created = await createConversationHistory(
-      session.providerId,
-      session.model,
-      session.generationSettings,
-      uniqueImportedName(importedTitle, reservedNames),
-      headMessageId,
-      sessionMessages
-    );
-    conversationIds.set(session.sourceId, created.id);
-    imported.push(await getConversationHistory(created.id));
-  }
-  for (const item of document.workingItems || []) {
-    const conversationId = conversationIds.get(item.conversationId);
-    if (!conversationId) continue;
-    await saveWorkingItem({
-      ...item,
-      id: uuid(),
-      conversationId,
-      observedHeadId: item.observedHeadId ? mappedIds.get(item.observedHeadId) || null : null,
-      ...(item.editSourceMessageId ? {editSourceMessageId: mappedIds.get(item.editSourceMessageId)} : {})
-    });
-  }
-  return imported;
-}
-
-async function importSessionFiles(files: Iterable<ImportSourceFile>, sourceLabel: string) {
-  const candidates = [...files];
-  if (!candidates.length) throw new Error("没有找到可导入的 .json 或 .jsonl 会话文件");
-  applyImportTitleTemplate(state.importTitleTemplate, {title: "标题", format: "codex", file: "rollout", folder: "sessions", date: "2026-08-13", model: "model", provider: "provider", index: 1});
-  state.importing = true;
-  state.importStatus = `正在扫描 ${sourceLabel} 中的 ${candidates.length} 个候选文件…`;
-  renderApp();
-  let imported = 0;
-  const formats = new Set<SessionTransferFormat>();
-  const failures: string[] = [];
-  const reservedNames = new Set(state.conversations.map((item) => item.name));
-  let firstConversationId = "";
-  for (const [index, candidate] of candidates.entries()) {
-    state.importStatus = `正在导入 ${index + 1} / ${candidates.length}：${candidate.source}`;
-    updateImportStatus();
-    try {
-      const document = parseSessionTransfer(await candidate.file.text(), candidate.file.name);
-      formats.add(document.format);
-      const conversations = await importTransferDocument(document, reservedNames, candidate.source, imported + 1);
-      imported += conversations.length;
-      firstConversationId ||= conversations[0]?.id || "";
-    } catch (error) {
-      failures.push(`${candidate.source}：${error instanceof Error ? error.message : "无法解析"}`);
-    }
-  }
-  try {
-    state.conversations = await listConversationHistory();
-    state.messageGraph = await listCachedMessages();
-    if (firstConversationId) await selectConversation(firstConversationId);
-    if (imported) scheduleRepositorySync();
-    const formatLabel = formats.size ? ` · ${[...formats].join(" / ")}` : "";
-    state.importStatus = `已导入 ${imported} 个会话${formatLabel}${failures.length ? `；跳过 ${failures.length} 个无法识别的文件` : ""}`;
-    if (failures.length) state.importStatus += `\n${failures.slice(0, 3).join("\n")}${failures.length > 3 ? `\n另有 ${failures.length - 3} 个…` : ""}`;
-  } catch (error) {
-    state.importStatus = `导入在保存阶段中断：${error instanceof Error ? error.message : "未知错误"}`;
-    throw error;
-  } finally {
-    state.importing = false;
-    renderApp();
-  }
-}
-
-function updateImportStatus() {
-  const status = root.querySelector<HTMLElement>(".session-import-status");
-  if (status) status.textContent = state.importStatus;
-}
-
-async function chooseImportDirectory() {
-  const picker = (window as Window & {showDirectoryPicker?: (options?: {mode?: "read"}) => Promise<FileSystemDirectoryHandle>}).showDirectoryPicker;
-  if (!picker) {
-    root.querySelector<HTMLInputElement>('[data-action="session-directory"]')?.click();
-    return;
-  }
-  try {
-    const handle = await picker({mode: "read"});
-    state.importing = true;
-    state.importStatus = `正在只读扫描文件夹 ${handle.name}…`;
-    renderApp();
-    const files = await filesFromDirectory(handle);
-    await importSessionFiles(files, `文件夹 ${handle.name}`);
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") return;
-    state.importing = false;
-    state.importStatus = `文件夹扫描失败：${error instanceof Error ? error.message : "未知错误"}`;
-    renderApp();
-    throw error;
-  }
 }
 
 function isStreamingAssistant(message: StoredChatMessage, index: number) {
@@ -391,66 +189,6 @@ async function updateAvatar() {
 function scrollSettingsSection(id: string) {
   const section = root.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
   section?.scrollIntoView({behavior: "smooth", block: "start"});
-}
-
-function historyItem(item: ConversationSummary, label = item.name, depth = 0) {
-  const displayLabel = String(label || "").trim() || untitledConversationLabel;
-  const modelLabel = item.model ? `${item.providerId || "Provider"} · ${item.model}` : "未配置模型";
-  return `<article class="history-item${item.id === state.conversation?.id ? " active" : ""}" data-dom-key="history:${escapeHtml(item.id)}" style="--history-depth:${depth}"><button class="history-select" type="button" data-action="select-conversation" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(displayLabel)}</strong><small>${escapeHtml(modelLabel)}</small></button><button class="history-rename" type="button" data-action="rename-conversation" data-id="${escapeHtml(item.id)}" aria-label="重命名 ${escapeHtml(displayLabel)}">${icons.edit}</button><button class="history-delete" type="button" data-action="delete-conversation" data-id="${escapeHtml(item.id)}" aria-label="删除 ${escapeHtml(displayLabel)}">${icons.trash}</button></article>`;
-}
-
-type HistoryTreeNode = {segment: string; path: string; conversations: ConversationSummary[]; children: Map<string, HistoryTreeNode>};
-
-function renderHistoryItems() {
-  if (!state.historyTree) return state.conversations.map((item) => historyItem(item)).join("");
-  const rootNode: HistoryTreeNode = {segment: "", path: "", conversations: [], children: new Map()};
-  for (const conversation of state.conversations) {
-    const segments = String(conversation.name || "").split("/").filter(Boolean);
-    let node = rootNode;
-    segments.forEach((segment, index) => {
-      const path = segments.slice(0, index + 1).join("/");
-      let child = node.children.get(segment);
-      if (!child) {
-        child = {segment, path, conversations: [], children: new Map()};
-        node.children.set(segment, child);
-      }
-      node = child;
-    });
-    node.conversations.push(conversation);
-  }
-  const renderNode = (node: HistoryTreeNode, depth: number): string => {
-    const children = [...node.children.values()].sort((left, right) => left.segment.localeCompare(right.segment));
-    const hasChildren = children.length > 0;
-    const rows = node.conversations.map((item) => historyItem(item, node.segment || item.name, depth)).join("");
-    const folder = hasChildren && node.segment
-      ? `<div class="history-folder" style="--history-depth:${depth}">${escapeHtml(node.segment)}</div>`
-      : "";
-    return `${folder}${rows}${children.map((child) => renderNode(child, node.segment ? depth + 1 : depth)).join("")}`;
-  };
-  return renderNode(rootNode, 0);
-}
-
-function importTitleTemplatePreview() {
-  try {
-    return {
-      text: `预览：${applyImportTitleTemplate(state.importTitleTemplate, {title: "修复登录问题", format: "codex", file: "rollout-123", folder: "sessions", date: "2026-08-13", model: "gpt-5.6-sol", provider: "openai", index: 1})}`,
-      error: false
-    };
-  } catch (error) {
-    return {text: error instanceof Error ? error.message : "标题模板无效", error: true};
-  }
-}
-
-function renderImportPanel() {
-  if (!state.importPanelOpen) return "";
-  const disabled = state.importing ? " disabled" : "";
-  const preview = importTitleTemplatePreview();
-  return `<div class="session-import-overlay" role="presentation" data-action="close-import-panel"><section class="session-import-panel" role="dialog" aria-modal="true" aria-labelledby="session-import-title" data-import-panel><header><div><h2 id="session-import-title">导入聊天记录</h2><p>文件只在当前浏览器中读取；不会上传原始文件或申请写权限。</p></div><button type="button" data-action="close-import-panel" aria-label="关闭"${disabled}>${icons.close}</button></header><div class="session-location-help"><h3>这些文件通常在哪里？</h3><dl><div><dt>Codex CLI</dt><dd><code>~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl</code></dd></div><div><dt>Claude Code</dt><dd><code>~/.claude/projects/&lt;项目&gt;/*.jsonl</code></dd></div><div><dt>OMP</dt><dd><code>~/.omp/agent/sessions/&lt;项目&gt;/*.jsonl</code></dd></div><div><dt>Turnfold</dt><dd>浏览器“下载”目录中的 <code>*.turnfold.json</code></dd></div></dl><p>Windows 中的 <code>~</code> 对应 <code>%USERPROFILE%</code>。如果文件选择器默认隐藏点号目录，可直接输入路径，或先将目录打包为 ZIP。</p></div><label class="session-title-template"><span><strong>会话标题模板</strong><small>使用 <code>/</code> 可生成分组名称</small></span><input type="text" data-action="import-title-template" value="${escapeHtml(state.importTitleTemplate)}" aria-describedby="import-title-template-help" aria-invalid="${preview.error}"${disabled}></label><p class="session-title-template-help" id="import-title-template-help">可用变量：<code>{title}</code> <code>{format}</code> <code>{file}</code> <code>{folder}</code> <code>{date}</code> <code>{model}</code> <code>{provider}</code> <code>{index}</code></p><output class="session-title-template-preview${preview.error ? " error" : ""}">${escapeHtml(preview.text)}</output><div class="session-import-actions"><button type="button" data-action="choose-session-files"${disabled}>${icons.upload}<span><strong>选择多个文件</strong><small>JSON / JSONL；可一次多选</small></span></button><button type="button" data-action="choose-session-archive"${disabled}><span class="format-mark">ZIP</span><span><strong>选择 ZIP 压缩包</strong><small>递归查找其中的 JSON / JSONL</small></span></button><button type="button" data-action="choose-session-directory"${disabled}><span class="format-mark">DIR</span><span><strong>授权读取文件夹</strong><small>只读并递归扫描，浏览器会先询问</small></span></button></div>${state.importStatus ? `<pre class="session-import-status" aria-live="polite">${escapeHtml(state.importStatus)}</pre>` : ""}<input type="file" data-action="session-file" accept=".json,.jsonl,application/json,application/x-ndjson" multiple hidden><input type="file" data-action="session-archive" accept=".zip,application/zip" multiple hidden><input type="file" data-action="session-directory" accept=".json,.jsonl,application/json,application/x-ndjson" webkitdirectory directory multiple hidden></section></div>`;
-}
-
-function renderHistory() {
-  const transferMenu = `<details class="history-transfer"><summary aria-label="导入或导出会话">${icons.transfer}</summary><div class="history-transfer-menu"><button type="button" data-action="import-session">${icons.upload}<span><strong>导入</strong><small>文件、ZIP 或本地文件夹</small></span></button><hr><button type="button" data-action="export-session" data-format="turnfold">${icons.transfer}<span><strong>Turnfold 完整备份</strong><small>整个本地仓库、分支和草稿</small></span></button><button type="button" data-action="export-session" data-format="codex"><span class="format-mark">CX</span><span><strong>Codex CLI JSONL</strong><small>导出当前分支</small></span></button><button type="button" data-action="export-session" data-format="claude"><span class="format-mark">CL</span><span><strong>Claude Code JSONL</strong><small>导出当前消息树</small></span></button><button type="button" data-action="export-session" data-format="omp"><span class="format-mark">OP</span><span><strong>OMP JSONL</strong><small>导出当前消息树</small></span></button></div></details>`;
-  return `<button class="history-backdrop${state.historyOpen ? " open" : ""}" type="button" aria-label="关闭历史记录" data-action="close-history"></button><aside class="history-sidebar${state.historyOpen ? " open" : ""}" aria-label="聊天历史"><div class="history-heading"><strong>聊天历史</strong><div>${transferMenu}<button type="button" data-action="toggle-history-tree" aria-label="${state.historyTree ? "平铺显示" : "树状显示"}">${state.historyTree ? icons.list : icons.tree}</button><button type="button" data-action="new-conversation" aria-label="新对话">${icons.plus}</button><button class="history-close" type="button" data-action="close-history" aria-label="关闭历史记录">${icons.close}</button></div></div><div class="history-list">${renderHistoryItems()}</div></aside>`;
 }
 
 function activeReplyTargetId() {
@@ -675,7 +413,7 @@ function renderApp() {
   const workspace = state.conversation
     ? renderThread()
     : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>开始一个新对话</h1><p>${usableProvider ? "当前模型已就绪，也可以只记录消息而不请求回答。" : "无需配置模型即可记录消息；配置模型后才能勾选“需要回答”。"}</p><button type="button" data-action="new-conversation">新对话</button></section>`;
-  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${renderIdentitySyncControl(profile)}</div></header>${renderHistory()}${workspace}${renderImportPanel()}${renderSettingsPage()}</main>`, appDomReconcileOptions);
+  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${renderIdentitySyncControl(profile)}</div></header>${renderHistory()}${workspace}${sessionTransferController.renderImportPanel()}${renderSettingsPage()}</main>`, appDomReconcileOptions);
   if (state.conversation) renderMessages();
   window.requestAnimationFrame(() => syncComposerInputLayout());
   scheduleMathTypesetting(root);
@@ -1063,12 +801,12 @@ async function immutableMessage(input: Pick<StoredChatMessage, "parentMessageId"
 
 async function loadConversationWorkingItems(conversationId: string) {
   state.messageGraph = await listCachedMessages();
-  state.workingItems = await listWorkingItems(conversationId);
+  state.workingItems = await workingItemRepository.list(conversationId);
   for (const item of state.workingItems) {
     if (item.kind === "assistant-stream" && item.status === "streaming") {
       item.status = "interrupted";
       item.failureReason = "connection-lost";
-      await saveWorkingItem(item);
+      await workingItemRepository.save(item);
     }
   }
   const drafts = state.workingItems.filter((item) => item.kind === "user-draft");
@@ -1077,7 +815,7 @@ async function loadConversationWorkingItems(conversationId: string) {
 
 async function persistWorkingItem(item: WorkingItem, render = false) {
   item.updatedAt = messageNow();
-  await saveWorkingItem(item);
+  await workingItemRepository.save(item);
   const index = state.workingItems.findIndex((candidate) => candidate.id === item.id);
   if (index >= 0) state.workingItems[index] = item;
   else state.workingItems.unshift(item);
@@ -1177,7 +915,7 @@ async function activateDraft(id: string) {
     state.workingSaveTimers.delete(current.id);
     if (workingItemText(current).trim()) await persistWorkingItem(current);
     else {
-      await removeWorkingItem(current.id);
+      await workingItemRepository.remove(current.id);
       state.workingItems = state.workingItems.filter((item) => item.id !== current.id);
     }
   }
@@ -1210,7 +948,7 @@ async function deleteWorking(id: string) {
 async function discardWorkingItem(id: string) {
   window.clearTimeout(state.workingSaveTimers.get(id));
   state.workingSaveTimers.delete(id);
-  await removeWorkingItem(id);
+  await workingItemRepository.remove(id);
 }
 
 function checkpointWorkingItem(item: WorkingItem) {
@@ -1316,7 +1054,7 @@ async function generateAssistant(baseMessages: StoredChatMessage[]) {
     finishingMarkdownMessages.add(committedAssistantId);
     const streamedArticle = root.querySelector<HTMLElement>("#message-list > article.assistant-message:last-child");
     if (streamedArticle?.dataset.messageId === assistant.id) streamedArticle.dataset.messageId = committedAssistantId;
-    await removeWorkingItem(working.id);
+    await workingItemRepository.remove(working.id);
     state.workingItems = state.workingItems.filter((item) => item.id !== working.id);
     await refreshConversations();
     if (!state.conversation.name) titleConversation = state.conversation;
@@ -1530,7 +1268,7 @@ async function commitPartial(id: string) {
     providerId: item.providerId || state.providerId,
     model: item.model || state.model
   });
-  await removeWorkingItem(item.id);
+  await workingItemRepository.remove(item.id);
   state.workingItems = state.workingItems.filter((candidate) => candidate.id !== item.id);
   await refreshConversations();
   updateConversationHash(state.conversation.id, "push");
@@ -1625,343 +1363,6 @@ function scheduleSettingsSave() {
       .then(() => scheduleRepositorySync())
       .catch((error) => console.error("Unable to save conversation settings", error));
   }, 400);
-}
-
-function openProviderEditor(providerId = "") {
-  state.providerSetupController?.abort();
-  state.settingsOpen = true;
-  state.providerEditorOpen = true;
-  state.providerEditorId = providerId;
-  state.providerEditorMode = "simple";
-  state.providerSetupKind = "catalog";
-  state.providerSetupUrl = "";
-  state.providerSetupKey = "";
-  state.providerSetupBusy = false;
-  state.providerSetupError = "";
-  state.providerSetupController = null;
-  state.providerModelEditorOpen = false;
-  state.providerModelProviderId = "";
-  state.providerModelPresetId = "";
-  state.providerModelQuery = "";
-  renderApp();
-  window.requestAnimationFrame(() => {
-    root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"});
-    root.querySelector<HTMLInputElement>('[name="provider-name"]')?.focus();
-  });
-}
-
-function closeProviderEditor() {
-  state.providerSetupController?.abort();
-  state.providerEditorOpen = false;
-  state.providerEditorId = "";
-  state.providerEditorMode = "simple";
-  state.providerSetupKind = "catalog";
-  state.providerSetupUrl = "";
-  state.providerSetupKey = "";
-  state.providerSetupBusy = false;
-  state.providerSetupError = "";
-  state.providerSetupController = null;
-}
-
-function openProviderModelEditor(providerId: string) {
-  if (!state.config?.providers.some((item) => item.id === providerId)) return;
-  state.settingsOpen = true;
-  closeProviderEditor();
-  state.providerModelEditorOpen = true;
-  state.providerModelProviderId = providerId;
-  state.providerModelPresetId = "";
-  state.providerModelQuery = "";
-  renderApp();
-  window.requestAnimationFrame(() => {
-    root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"});
-    root.querySelector<HTMLInputElement>('[name="provider-model-id"]')?.focus();
-  });
-}
-
-function closeProviderModelEditor() {
-  state.providerModelEditorOpen = false;
-  state.providerModelProviderId = "";
-  state.providerModelPresetId = "";
-  state.providerModelQuery = "";
-}
-
-async function updateModelsDevCatalog() {
-  if (state.modelsDevUpdating) return;
-  state.modelsDevUpdating = true;
-  state.modelsDevError = "";
-  renderApp();
-  try {
-    const stored = await downloadModelsDevCatalog();
-    state.modelsDevCatalog = stored.catalog;
-    state.modelsDevModelCount = modelsDevModelCount(stored.catalog);
-    state.modelsDevFetchedAt = stored.fetchedAt;
-  } catch (error) {
-    state.modelsDevError = error instanceof Error ? error.message : "models.dev 目录更新失败";
-  } finally {
-    state.modelsDevUpdating = false;
-    renderApp();
-  }
-}
-
-async function resetModelsDevCatalog() {
-  await deleteStoredModelsDevCatalog();
-  state.modelsDevCatalog = embeddedModelsDevCatalog;
-  state.modelsDevModelCount = embeddedModelsDevModelCount;
-  state.modelsDevFetchedAt = "";
-  state.modelsDevError = "";
-  state.providerModelPresetId = "";
-  renderApp();
-}
-
-function openProviderSettings() {
-  state.settingsOpen = true;
-  closeProviderEditor();
-  closeProviderModelEditor();
-  renderApp();
-  window.requestAnimationFrame(() => root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"}));
-}
-
-function formValue(form: HTMLFormElement, name: string) {
-  const field = form.elements.namedItem(name);
-  return field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement ? field.value.trim() : "";
-}
-
-function validProviderUrl(value: string, label: string, required = true) {
-  if (!value && !required) return "";
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)) throw new Error();
-    return value.replace(/\/+$/, "");
-  } catch {
-    throw new Error(`${label} 必须是有效的 http 或 https URL`);
-  }
-}
-
-function validProviderId(value: string) {
-  const id = value.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9._-]{0,79}$/.test(id)) throw new Error("Provider 标识只能包含小写字母、数字、点、下划线和连字符");
-  return id;
-}
-
-function providerHeadersFromJson(value: string) {
-  if (!value) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new Error("附加 Headers 必须是有效的 JSON 对象");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("附加 Headers 必须是 JSON 对象");
-  const headers: Record<string, string> = {};
-  for (const [name, headerValue] of Object.entries(parsed)) {
-    if (typeof headerValue !== "string") throw new Error(`Header ${name} 的值必须是字符串`);
-    if (!name.trim()) throw new Error("Header 名称不能为空");
-    headers[name] = headerValue;
-  }
-  return headers;
-}
-
-async function persistProviderProfile(profileInput: ChatProvider, apiKey: string) {
-  if (!state.config) throw new Error("Provider 配置尚未加载");
-  const existing = state.config.providers.find((item) => item.id === profileInput.id);
-  const activeProviderMissing = Boolean(state.providerId && !state.config.providers.some((item) => item.id === state.providerId));
-  const profile = await saveLocalProviderProfile(profileInput) as ChatProvider;
-  if (profile.auth.type === "none") await deleteLocalCredential(profile.id);
-  else if (apiKey) await saveLocalCredential(profile.id, "default", {apiKey});
-  state.localCredentials = await listLocalCredentials();
-  state.config.providers = existing
-    ? state.config.providers.map((item) => item.id === profile.id ? profile : item)
-    : [...state.config.providers, profile];
-  if (!state.providerId || activeProviderMissing || state.providerId === profile.id) {
-    state.providerId = profile.id;
-    state.model = settingsForProvider(profile).model;
-    if (state.conversation) {
-      state.conversation = {...state.conversation, providerId: profile.id, model: state.model};
-      scheduleSettingsSave();
-    }
-  }
-  window.localStorage.setItem("turnfold-provider", profile.id);
-  if (state.model) window.localStorage.setItem(`turnfold-model:${profile.id}`, state.model);
-  closeProviderEditor();
-  await cacheChatConfig(state.identityKey, {profile: state.config.profile});
-  renderApp();
-  return profile;
-}
-
-async function saveCatalogProviderForm(form: HTMLFormElement) {
-  if (!state.config) return;
-  const providerId = formValue(form, "provider-catalog-id");
-  const template = selectableCatalogProviderProfiles(state.modelsDevCatalog).find((item) => item.id === providerId);
-  if (!template) throw new Error("所选 Provider 已不在当前模型目录中");
-  if (state.config.providers.some((item) => item.id === providerId)) throw new Error("该 Provider 已启用");
-  const apiKey = formValue(form, "provider-api-key");
-  if (template.auth.type !== "none" && !apiKey) throw new Error("请输入 API Key");
-  const timestamp = messageNow();
-  await persistProviderProfile({
-    ...template,
-    createdAt: timestamp,
-    updatedAt: timestamp
-  }, apiKey);
-}
-
-async function saveProviderCredentialForm(form: HTMLFormElement) {
-  const provider = state.config?.providers.find((item) => item.id === state.providerEditorId);
-  if (!provider) throw new Error("Provider 已不存在");
-  const apiKey = formValue(form, "provider-api-key");
-  const credential = localCredential(provider.id);
-  if (provider.auth.type !== "none" && !apiKey && !credential?.secret.apiKey) throw new Error("请输入 API Key");
-  if (provider.auth.type === "none") await deleteLocalCredential(provider.id);
-  else if (apiKey) await saveLocalCredential(provider.id, "default", {apiKey});
-  state.localCredentials = await listLocalCredentials();
-  closeProviderEditor();
-  renderApp();
-}
-
-async function saveDetectedProviderForm(form: HTMLFormElement) {
-  if (!state.config || state.providerSetupBusy) return;
-  state.providerSetupUrl = formValue(form, "provider-url");
-  state.providerSetupKey = formValue(form, "provider-api-key");
-  state.providerSetupController?.abort();
-  const controller = new AbortController();
-  state.providerSetupController = controller;
-  state.providerSetupBusy = true;
-  state.providerSetupError = "";
-  renderApp();
-  try {
-    const detected = await autoDetectProvider(
-      state.providerSetupUrl,
-      state.providerSetupKey,
-      state.config.providers.map((item) => item.id),
-      fetch,
-      controller.signal
-    );
-    if (state.providerSetupController !== controller) return;
-    state.providerSetupController = null;
-    const timestamp = messageNow();
-    await persistProviderProfile({...detected, createdAt: timestamp, updatedAt: timestamp}, state.providerSetupKey);
-  } catch (error) {
-    if (state.providerSetupController !== controller) return;
-    state.providerSetupController = null;
-    state.providerSetupBusy = false;
-    state.providerSetupError = error instanceof Error ? error.message : "Provider 自动探测失败";
-    renderApp();
-  }
-}
-
-async function saveProviderForm(form: HTMLFormElement) {
-  if (!state.config) return;
-  const existing = state.config.providers.find((item) => item.id === state.providerEditorId);
-  const embedded = getEmbeddedProviderProfile(state.providerEditorId);
-  const template = existing || embedded;
-  const providerId = validProviderId(formValue(form, "provider-id"));
-  const name = formValue(form, "provider-name");
-  const protocol = formValue(form, "provider-protocol") as ProviderProtocol;
-  const baseUrl = validProviderUrl(formValue(form, "provider-base-url"), "Base URL");
-  const discoveryUrl = validProviderUrl(formValue(form, "provider-discovery-url"), "模型发现 URL", false);
-  const authType = formValue(form, "provider-auth") as ProviderProfile["auth"]["type"];
-  const authHeader = formValue(form, "provider-auth-header");
-  const defaultModel = formValue(form, "provider-default-model");
-  const headers = providerHeadersFromJson(formValue(form, "provider-headers"));
-  if (!name) throw new Error("Provider 名称不能为空");
-  if (state.providerEditorId && providerId !== state.providerEditorId) throw new Error("已保存 Provider 的标识不能修改");
-  if (!existing && state.config.providers.some((item) => item.id === providerId)) throw new Error("该 Provider 标识已存在");
-  if (!["openai-chat", "openai-responses", "anthropic", "google"].includes(protocol)) throw new Error("不支持的 Provider 协议");
-  if (!["none", "bearer", "header"].includes(authType)) throw new Error("不支持的认证方式");
-  if (authType === "header" && !authHeader) throw new Error("自定义 Header 认证需要填写 Header 名称");
-  const timestamp = messageNow();
-  const endpointChanged = Boolean(template && (template.baseUrl !== baseUrl || template.protocol !== protocol));
-  const models = endpointChanged ? [] : [...(template?.models || [])];
-  if (defaultModel && !models.some((model) => model.id === defaultModel)) models.unshift({id: defaultModel, name: defaultModel, source: "manual"});
-  const profileInput: ChatProvider = {
-    id: providerId,
-    name,
-    protocol,
-    baseUrl,
-    auth: authType === "header" ? {type: "header", header: authHeader} : {type: authType},
-    headers,
-    discoveryUrl,
-    models,
-    defaultModel: defaultModel || models[0]?.id || "",
-    createdAt: existing?.createdAt || timestamp,
-    updatedAt: timestamp
-  };
-  await persistProviderProfile(profileInput, formValue(form, "provider-api-key"));
-}
-
-async function saveProviderModelForm(form: HTMLFormElement) {
-  if (!state.config) return;
-  const provider = state.config.providers.find((item) => item.id === state.providerModelProviderId);
-  if (!provider) throw new Error("Provider 已不存在");
-  const modelId = formValue(form, "provider-model-id");
-  if (!modelId) throw new Error("模型 ID 不能为空");
-  if (/\s/.test(modelId)) throw new Error("模型 ID 不能包含空白字符");
-  const modelName = formValue(form, "provider-model-name") || modelId;
-  const template = modelsDevModel(state.modelsDevCatalog, provider.id, modelId)
-    || provider.models.find((model) => model.id === modelId);
-  const model: ProviderModel = {...template, id: modelId, name: modelName, source: "manual"};
-  const models = [...provider.models];
-  const existingIndex = models.findIndex((item) => item.id === modelId);
-  if (existingIndex >= 0) models.splice(existingIndex, 1, model);
-  else models.push(model);
-  const updated = await saveLocalProviderProfile({
-    ...provider,
-    models,
-    defaultModel: provider.defaultModel || modelId,
-    updatedAt: messageNow()
-  }) as ChatProvider;
-  state.config.providers = state.config.providers.map((item) => item.id === updated.id ? updated : item);
-  if (state.providerId === updated.id && !state.model) {
-    state.model = updated.defaultModel;
-    window.localStorage.setItem(`turnfold-model:${updated.id}`, state.model);
-    if (state.conversation) {
-      state.conversation = {...state.conversation, model: state.model};
-      scheduleSettingsSave();
-    }
-  }
-  closeProviderModelEditor();
-  renderApp();
-}
-
-async function probeProvider(providerId: string) {
-  if (!state.config) return;
-  const item = state.config.providers.find((candidate) => candidate.id === providerId);
-  if (!item) return;
-  try {
-    const detected = await discoverLocalProvider(item);
-    state.config.providers = state.config.providers.map((candidate) => candidate.id === detected.id ? detected : candidate);
-    if (state.providerId === detected.id && !detected.models.some((model) => model.id === state.model)) state.model = settingsForProvider(detected).model;
-    window.alert(`探测成功：发现 ${detected.models.length} 个模型`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "未知错误";
-    state.config.providers = state.config.providers.map((candidate) => candidate.id === providerId ? {...candidate, modelDiscoveryError: message} : candidate);
-    window.alert(`探测失败：${message}\n\n请确认 Provider 允许当前网页跨域访问；本机端点还可能需要浏览器的“本地网络访问”权限。`);
-  }
-  renderApp();
-}
-
-async function removeProvider(providerId: string) {
-  if (!state.config) return;
-  const item = state.config.providers.find((candidate) => candidate.id === providerId);
-  const embeddedProvider = isEmbeddedProvider(providerId);
-  const prompt = embeddedProvider
-    ? `禁用内嵌 Provider“${item?.name || providerId}”并删除其本地配置和凭据？历史对话不会删除。`
-    : `删除此浏览器中的 Provider“${item?.name || providerId}”及其凭据？历史对话不会删除。`;
-  if (!item || !window.confirm(prompt)) return;
-  await deleteLocalProviderProfile(providerId);
-  await deleteLocalCredential(providerId);
-  state.localCredentials = await listLocalCredentials();
-  state.config.providers = state.config.providers.filter((candidate) => candidate.id !== providerId);
-  if (state.providerId === providerId) {
-    const replacement = state.config.providers.find((candidate) => candidate.models.length) || state.config.providers[0];
-    state.providerId = state.conversation?.providerId === providerId ? providerId : replacement?.id || "";
-    state.model = state.conversation?.providerId === providerId ? state.conversation.model : replacement ? settingsForProvider(replacement).model : "";
-  }
-  if (state.providerEditorId === providerId) {
-    closeProviderEditor();
-  }
-  if (state.providerModelProviderId === providerId) closeProviderModelEditor();
-  await cacheChatConfig(state.identityKey, {profile: state.config.profile});
-  renderApp();
 }
 
 function cachedProfile(value: CachedChatBootstrap | undefined) {
@@ -2066,7 +1467,7 @@ async function initialize() {
   state.offline = !navigator.onLine;
   if (!state.config.providers.length) {
     state.settingsOpen = true;
-    openProviderEditor();
+    providerController.openProviderEditor();
   }
   renderApp();
   if (!state.config.providers.length) window.requestAnimationFrame(() => {
@@ -2109,29 +1510,8 @@ async function initialize() {
 
 root.addEventListener("submit", (event) => {
   if (!(event.target instanceof HTMLFormElement)) return;
-  if (event.target.matches("[data-provider-catalog-form]")) {
+  if (providerController.handleSubmit(event.target)) {
     event.preventDefault();
-    void saveCatalogProviderForm(event.target).catch(showError);
-    return;
-  }
-  if (event.target.matches("[data-provider-detect-form]")) {
-    event.preventDefault();
-    void saveDetectedProviderForm(event.target);
-    return;
-  }
-  if (event.target.matches("[data-provider-credential-form]")) {
-    event.preventDefault();
-    void saveProviderCredentialForm(event.target).catch(showError);
-    return;
-  }
-  if (event.target.matches("[data-provider-model-form]")) {
-    event.preventDefault();
-    void saveProviderModelForm(event.target).catch(showError);
-    return;
-  }
-  if (event.target.matches("[data-provider-form]")) {
-    event.preventDefault();
-    void saveProviderForm(event.target).catch(showError);
     return;
   }
   if (event.target.id !== "composer") return;
@@ -2142,16 +1522,7 @@ root.addEventListener("submit", (event) => {
 
 root.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.settingsOpen) {
-    if (state.providerModelEditorOpen) {
-      closeProviderModelEditor();
-      renderApp();
-      return;
-    }
-    if (state.providerEditorOpen) {
-      closeProviderEditor();
-      renderApp();
-      return;
-    }
+    if (providerController.closeTopEditor()) return;
     state.settingsOpen = false;
     state.modelQuery = "";
     renderApp();
@@ -2178,6 +1549,7 @@ root.addEventListener("keydown", (event) => {
 
 root.addEventListener("input", (event) => {
   const target = event.target;
+  if (sessionTransferController.handleInput(target)) return;
   if (target instanceof HTMLTextAreaElement && target.name === "message") {
     syncComposerInputLayout(target);
     if (state.conversation) {
@@ -2197,28 +1569,13 @@ root.addEventListener("input", (event) => {
     state.modelQuery = target.value;
     renderApp();
   }
-  if (target instanceof HTMLInputElement && target.dataset.action === "provider-model-search") {
-    state.providerModelQuery = target.value;
-    renderApp();
-  }
-  if (target instanceof HTMLInputElement && target.dataset.action === "provider-setup-url") state.providerSetupUrl = target.value;
-  if (target instanceof HTMLInputElement && target.dataset.action === "provider-setup-key") state.providerSetupKey = target.value;
-  if (target instanceof HTMLInputElement && target.dataset.action === "import-title-template") {
-    state.importTitleTemplate = target.value;
-    window.localStorage.setItem("turnfold-import-title-template", target.value);
-    const preview = importTitleTemplatePreview();
-    target.setAttribute("aria-invalid", String(preview.error));
-    const output = root.querySelector<HTMLOutputElement>(".session-title-template-preview");
-    if (output) {
-      output.textContent = preview.text;
-      output.classList.toggle("error", preview.error);
-    }
-  }
+  if (providerController.handleInput(target)) return;
 });
 
 root.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+  if (sessionTransferController.handleFileChange(target)) return;
   if (target.dataset.action === "advanced-actions" && target instanceof HTMLInputElement) {
     state.advancedActions = target.checked;
     window.localStorage.setItem("turnfold-advanced-actions", target.checked ? "1" : "0");
@@ -2229,24 +1586,6 @@ root.addEventListener("change", (event) => {
     state.historyTree = target.checked;
     window.localStorage.setItem("turnfold-history-tree", target.checked ? "1" : "0");
     renderApp();
-    return;
-  }
-  if (target.dataset.action === "session-file" && target instanceof HTMLInputElement) {
-    const files = [...(target.files || [])];
-    if (files.length) void expandImportFiles(files).then((items) => importSessionFiles(items, `${files.length} 个所选文件`)).catch(showError).finally(() => { target.value = ""; });
-    else target.value = "";
-    return;
-  }
-  if (target.dataset.action === "session-archive" && target instanceof HTMLInputElement) {
-    const files = [...(target.files || [])];
-    if (files.length) void expandImportFiles(files).then((items) => importSessionFiles(items, `${files.length} 个 ZIP 压缩包`)).catch(showError).finally(() => { target.value = ""; });
-    else target.value = "";
-    return;
-  }
-  if (target.dataset.action === "session-directory" && target instanceof HTMLInputElement) {
-    const files = [...(target.files || [])];
-    if (files.length) void expandImportFiles(files).then((items) => importSessionFiles(items, "所选文件夹")).catch(showError).finally(() => { target.value = ""; });
-    else target.value = "";
     return;
   }
   if (target.dataset.action === "request-assistant-reply" && target instanceof HTMLInputElement && state.conversation) {
@@ -2278,22 +1617,10 @@ root.addEventListener("click", (event) => {
   const button = (event.target as Element).closest<HTMLElement>("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (providerController.handleAction(button)) return;
+  if (sessionTransferController.handleAction(button, event.target)) return;
   if (action === "open-settings") { state.settingsOpen = true; state.modelQuery = ""; renderApp(); }
-  if (action === "close-settings") { state.settingsOpen = false; closeProviderEditor(); closeProviderModelEditor(); state.modelQuery = ""; renderApp(); }
-  if (action === "open-provider-settings") openProviderSettings();
-  if (action === "add-provider") openProviderEditor();
-  if (action === "edit-provider" && button.dataset.provider) openProviderEditor(button.dataset.provider);
-  if (action === "cancel-provider-edit") { closeProviderEditor(); renderApp(); }
-  if (action === "provider-simple-mode") { state.providerEditorMode = "simple"; state.providerSetupError = ""; renderApp(); }
-  if (action === "provider-advanced-mode") { state.providerEditorMode = "advanced"; state.providerSetupError = ""; renderApp(); }
-  if (action === "provider-setup-kind" && (button.dataset.kind === "catalog" || button.dataset.kind === "detect")) { state.providerSetupKind = button.dataset.kind; state.providerSetupError = ""; renderApp(); }
-  if (action === "add-provider-model" && button.dataset.provider) openProviderModelEditor(button.dataset.provider);
-  if (action === "select-provider-model-preset" && button.dataset.model) { state.providerModelPresetId = button.dataset.model; renderApp(); }
-  if (action === "cancel-provider-model-edit") { closeProviderModelEditor(); renderApp(); }
-  if (action === "update-models-dev") void updateModelsDevCatalog();
-  if (action === "reset-models-dev") void resetModelsDevCatalog().catch(showError);
-  if (action === "probe-provider" && button.dataset.provider) void probeProvider(button.dataset.provider).catch(showError);
-  if (action === "delete-provider" && button.dataset.provider) void removeProvider(button.dataset.provider).catch(showError);
+  if (action === "close-settings") { state.settingsOpen = false; providerController.closeProviderEditor(); providerController.closeProviderModelEditor(); state.modelQuery = ""; renderApp(); }
   if (action === "scroll-settings-section" && button.dataset.id) scrollSettingsSection(button.dataset.id);
   if (action === "toggle-history") { state.historyOpen = !state.historyOpen; renderApp(); }
   if (action === "close-history") { state.historyOpen = false; renderApp(); }
@@ -2302,12 +1629,6 @@ root.addEventListener("click", (event) => {
     window.localStorage.setItem("turnfold-history-tree", state.historyTree ? "1" : "0");
     renderApp();
   }
-  if (action === "import-session") { state.importPanelOpen = true; state.importStatus = ""; renderApp(); }
-  if (action === "close-import-panel" && !state.importing && (!(event.target instanceof Element) || !event.target.closest("[data-import-panel]") || button.matches("button"))) { state.importPanelOpen = false; renderApp(); }
-  if (action === "choose-session-files") root.querySelector<HTMLInputElement>('[data-action="session-file"]')?.click();
-  if (action === "choose-session-archive") root.querySelector<HTMLInputElement>('[data-action="session-archive"]')?.click();
-  if (action === "choose-session-directory") void chooseImportDirectory().catch(showError);
-  if (action === "export-session" && button.dataset.format) void exportSessions(button.dataset.format as SessionTransferFormat).catch(showError);
   if (action === "new-conversation") void newConversation().catch(showError);
   if (action === "switch-branch" && button.dataset.id) switchBranch(button.dataset.id);
   if (action === "leave-branch-preview") { state.previewHeadId = ""; renderApp(); }

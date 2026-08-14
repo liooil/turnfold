@@ -1,6 +1,7 @@
 node_modules
 dist
 docs/app
+pages-dist
 .next
 package-lock.json
 npm-debug.log

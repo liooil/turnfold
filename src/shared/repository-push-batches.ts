@@ -1,10 +1,7 @@
 import type {RepositoryRefUpdate, StoredChatMessage} from "./conversation-types";
+import type {RepositoryPush} from "./repository-types";
 
-export type RepositoryPushPayload = {
-  repositoryId: string;
-  objects: StoredChatMessage[];
-  refs: RepositoryRefUpdate[];
-};
+export type RepositoryPushPayload = RepositoryPush;
 
 function chunks<T>(items: T[], size: number) {
   const result: T[][] = [];

@@ -5,14 +5,12 @@ import {
   appendConversationMessage,
   createConversation,
   deleteConversation,
-  fetchRepository,
   getConversation,
   listConversations,
-  pushRepositoryRef,
-  putRepositoryObjects,
   saveConversationMessages,
   updateConversation
 } from "./storage/conversations";
+import {fetchRepository, pushRepositoryRef, putRepositoryObjects} from "./storage/repository-store";
 import {identityFromHeaders} from "./identity";
 import {json, securityHeaders} from "./http";
 

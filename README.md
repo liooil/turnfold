@@ -59,6 +59,8 @@ bun run build
 docker compose config
 ```
 
+`bun run build:pages` assembles the handwritten site in `docs/` and the web app in `pages-dist/app/`. The ignored `pages-dist/` directory is the GitHub Pages deployment artifact; generated application files are not committed.
+
 The source dependency direction is `client -> shared <- server`. See [docs/architecture.md](docs/architecture.md) for the module and compatibility boundaries.
 
 The development server listens on port `3000` by default. Set `PORT` to override it.

@@ -93,7 +93,7 @@ export async function mergeOfflineProfiles(sourceProfileId: string, targetProfil
   if (!sourceProfileId || sourceProfileId === targetProfileId) return;
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
-    const storeNames = ["profiles", "conversations", "pending", "messages", "working", "reflog", "repositoryOutbox"];
+    const storeNames = ["profiles", "conversations", "pending", "messages", "working", "reflog", "repositoryOutbox", "peerSyncStates"];
     const current = database.transaction(storeNames, "readwrite");
     const profiles = current.objectStore("profiles");
     const sourceProfileRequest = profiles.get(sourceProfileId);

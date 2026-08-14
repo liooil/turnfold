@@ -1,6 +1,6 @@
 // Keep the original database identifiers so existing installations upgrade without losing local history.
 const databaseName = "xiteng-chat-offline";
-const databaseVersion = 3;
+const databaseVersion = 4;
 const activeProfileKey = "xiteng-chat-offline-profile";
 
 export function openOfflineDatabase() {
@@ -33,6 +33,11 @@ export function openOfflineDatabase() {
       if (!database.objectStoreNames.contains("repositoryOutbox")) {
         const outbox = database.createObjectStore("repositoryOutbox", {keyPath: "cacheKey"});
         outbox.createIndex("profileId", "profileId");
+      }
+      if (!database.objectStoreNames.contains("peerSyncStates")) {
+        const peers = database.createObjectStore("peerSyncStates", {keyPath: "cacheKey"});
+        peers.createIndex("profileId", "profileId");
+        peers.createIndex("profilePeer", ["profileId", "peerId"], {unique: true});
       }
     };
     request.onsuccess = () => resolve(request.result);
