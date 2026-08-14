@@ -253,6 +253,11 @@ function requiredString(value: unknown, field: string, maximum: number) {
   return value.trim().slice(0, maximum);
 }
 
+function conversationSettingString(value: unknown, field: string, maximum: number) {
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  return value.trim().slice(0, maximum);
+}
+
 function conversationName(value: unknown) {
   if (typeof value !== "string") throw new Error("name must be a string");
   return value.trim().slice(0, 300);
@@ -376,8 +381,8 @@ export function createConversation(identity: ChatIdentity, input: {
   name?: unknown;
   headMessageId?: unknown;
 }): Conversation {
-  const providerId = requiredString(input.providerId, "providerId", 80);
-  const model = requiredString(input.model, "model", 300);
+  const providerId = conversationSettingString(input.providerId, "providerId", 80);
+  const model = conversationSettingString(input.model, "model", 300);
   const name = input.name === undefined ? "" : conversationName(input.name);
   const headMessageId = nullableId(input.headMessageId, "headMessageId");
   if (headMessageId && !ownedMessage(identity, headMessageId)) throw new Error("headMessageId is unavailable");
@@ -411,8 +416,8 @@ export function updateConversation(identity: ChatIdentity, id: string, input: {
 }) {
   const existing = ownedConversation(identity, id);
   if (!existing) return null;
-  const providerId = input.providerId === undefined ? existing.provider_id : requiredString(input.providerId, "providerId", 80);
-  const model = input.model === undefined ? existing.model : requiredString(input.model, "model", 300);
+  const providerId = input.providerId === undefined ? existing.provider_id : conversationSettingString(input.providerId, "providerId", 80);
+  const model = input.model === undefined ? existing.model : conversationSettingString(input.model, "model", 300);
   const name = input.name === undefined ? existing.name : conversationName(input.name);
   const generationSettings = input.generationSettings === undefined
     ? normalizeGenerationSettings(JSON.parse(existing.settings_json || "{}"))
@@ -491,8 +496,8 @@ export function appendConversationMessage(identity: ChatIdentity, conversationId
         timestamp
       );
     }
-    const providerId = input.providerId === undefined ? existing.provider_id : requiredString(input.providerId, "providerId", 80);
-    const model = input.model === undefined ? existing.model : requiredString(input.model, "model", 300);
+    const providerId = input.providerId === undefined ? existing.provider_id : conversationSettingString(input.providerId, "providerId", 80);
+    const model = input.model === undefined ? existing.model : conversationSettingString(input.model, "model", 300);
     const name = existing.name;
     getDatabase().query(`
       UPDATE chat_conversation SET title = ?, name = ?, head_message_id = ?, provider_id = ?, model = ?, head_version = head_version + 1, updated_at = ?
@@ -556,7 +561,7 @@ export function saveConversationMessages(identity: ChatIdentity, id: string, inp
     getDatabase().query(`
       UPDATE chat_conversation SET head_message_id = NULL, provider_id = ?, model = ?, updated_at = ?
       WHERE id = ? AND owner_issuer = ? AND owner_sub = ?
-    `).run(requiredString(input.providerId, "providerId", 80), requiredString(input.model, "model", 300), now(), id, identity.issuer, identity.sub);
+    `).run(conversationSettingString(input.providerId, "providerId", 80), conversationSettingString(input.model, "model", 300), now(), id, identity.issuer, identity.sub);
   }
   return getConversation(identity, id);
 }
@@ -658,8 +663,8 @@ export function pushRepositoryRef(identity: ChatIdentity, update: RepositoryRefU
     }
     if (headMessageId && !ownedMessage(identity, headMessageId)) throw new Error("head object is unavailable");
     const name = conversationName(update.name);
-    const providerId = requiredString(update.providerId, "providerId", 80);
-    const model = requiredString(update.model, "model", 300);
+    const providerId = conversationSettingString(update.providerId, "providerId", 80);
+    const model = conversationSettingString(update.model, "model", 300);
     const timestamp = now();
     getDatabase().query(`
       INSERT INTO chat_conversation (
@@ -676,8 +681,8 @@ export function pushRepositoryRef(identity: ChatIdentity, update: RepositoryRefU
   }
   if (headMessageId && !ownedMessage(identity, headMessageId)) throw new Error("head object is unavailable");
   const name = conversationName(update.name);
-  const providerId = requiredString(update.providerId, "providerId", 80);
-  const model = requiredString(update.model, "model", 300);
+  const providerId = conversationSettingString(update.providerId, "providerId", 80);
+  const model = conversationSettingString(update.model, "model", 300);
   const headChanged = existing.head_message_id !== headMessageId;
   const metadataChanged = existing.name !== name
     || existing.provider_id !== providerId

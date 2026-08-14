@@ -34,7 +34,8 @@ import {
   saveLocalProviderProfile
 } from "./providers/local-providers";
 import type {ChatProfile} from "../shared/profile-types";
-import {getProviderPreset, isProviderPreset} from "./providers/provider-presets";
+import {getEmbeddedProviderProfile, isEmbeddedProvider, selectableCatalogProviderProfiles} from "./providers/embedded-providers";
+import {autoDetectProvider} from "./providers/provider-auto-detect";
 import {discoverProviderModels, streamProvider} from "./providers/provider-runtime";
 import {embeddedModelsDevCatalog, embeddedModelsDevModelCount, modelsDevModel, modelsDevModelCount} from "./providers/models-dev-catalog";
 import {deleteStoredModelsDevCatalog, downloadModelsDevCatalog, loadStoredModelsDevCatalog} from "./providers/models-dev-storage";
@@ -61,9 +62,10 @@ import {createConversationSelectors, messagePartText} from "./conversation-selec
 import {createModelSelection} from "./model-selection";
 import {expandImportFiles, filesFromDirectory, type ImportSourceFile} from "./session-files";
 import {createMarkdownRenderer, finishingMarkdownMessages, markdownRenderMetrics, streamingMarkdownCaches} from "./markdown-renderer";
-import {createDraftModel, draftLabel, messageNow, workingItemText} from "./draft-model";
+import {createDraftModel, draftLabel, messageNow, requestAssistantReplyForSubmission, workingItemText} from "./draft-model";
 import {updateConversationHash} from "./navigation";
 import {createSettingsView} from "./settings-view";
+import {reconcileElement, reconcileHtml, type DomReconcileOptions} from "./dom-reconciler";
 
 type StreamEvent = {type: string; text?: string; error?: string; metadata?: ResponseMetadata};
 type StreamRequestContext = {provider: ChatProvider; model: string; conversationId: string; generationSettings: GenerationSettings};
@@ -83,6 +85,13 @@ const {clearMathTypesetting, renderMarkdownContainer, scheduleMathTypesetting} =
   isViewportAtBottom,
   scrollBottom: () => scrollBottom()
 });
+const appDomReconcileOptions: DomReconcileOptions = {
+  preserveChildren: (element) => element.id === "message-list",
+  beforeDiscard: (node) => {
+    if (!(node instanceof Element)) return;
+    if (node.matches('.math-fragment, [data-math-rendered="1"]') || node.querySelector('.math-fragment, [data-math-rendered="1"]')) clearMathTypesetting(node);
+  }
+};
 const {activeDraft, canStashActiveDraft, newDraftItem} = createDraftModel(state, {
   uuid,
   displayedHeadId: () => displayedMessages().at(-1)?.id || null
@@ -332,6 +341,13 @@ function provider() {
   return state.config?.providers.find((item) => item.id === state.providerId) || null;
 }
 
+function configuredResponseModel() {
+  const item = provider();
+  return item && state.model && item.models.some((model) => model.id === state.model)
+    ? {provider: item, model: state.model}
+    : null;
+}
+
 function localCredential(providerId = state.providerId) {
   return state.localCredentials.find((item) => item.providerId === providerId && item.name === "default")
     || state.localCredentials.find((item) => item.providerId === providerId)
@@ -379,7 +395,8 @@ function scrollSettingsSection(id: string) {
 
 function historyItem(item: ConversationSummary, label = item.name, depth = 0) {
   const displayLabel = String(label || "").trim() || untitledConversationLabel;
-  return `<article class="history-item${item.id === state.conversation?.id ? " active" : ""}" style="--history-depth:${depth}"><button class="history-select" type="button" data-action="select-conversation" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(displayLabel)}</strong><small>${escapeHtml(item.providerId)} · ${escapeHtml(item.model)}</small></button><button class="history-rename" type="button" data-action="rename-conversation" data-id="${escapeHtml(item.id)}" aria-label="重命名 ${escapeHtml(displayLabel)}">${icons.edit}</button><button class="history-delete" type="button" data-action="delete-conversation" data-id="${escapeHtml(item.id)}" aria-label="删除 ${escapeHtml(displayLabel)}">${icons.trash}</button></article>`;
+  const modelLabel = item.model ? `${item.providerId || "Provider"} · ${item.model}` : "未配置模型";
+  return `<article class="history-item${item.id === state.conversation?.id ? " active" : ""}" data-dom-key="history:${escapeHtml(item.id)}" style="--history-depth:${depth}"><button class="history-select" type="button" data-action="select-conversation" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(displayLabel)}</strong><small>${escapeHtml(modelLabel)}</small></button><button class="history-rename" type="button" data-action="rename-conversation" data-id="${escapeHtml(item.id)}" aria-label="重命名 ${escapeHtml(displayLabel)}">${icons.edit}</button><button class="history-delete" type="button" data-action="delete-conversation" data-id="${escapeHtml(item.id)}" aria-label="删除 ${escapeHtml(displayLabel)}">${icons.trash}</button></article>`;
 }
 
 type HistoryTreeNode = {segment: string; path: string; conversations: ConversationSummary[]; children: Map<string, HistoryTreeNode>};
@@ -433,8 +450,7 @@ function renderImportPanel() {
 
 function renderHistory() {
   const transferMenu = `<details class="history-transfer"><summary aria-label="导入或导出会话">${icons.transfer}</summary><div class="history-transfer-menu"><button type="button" data-action="import-session">${icons.upload}<span><strong>导入</strong><small>文件、ZIP 或本地文件夹</small></span></button><hr><button type="button" data-action="export-session" data-format="turnfold">${icons.transfer}<span><strong>Turnfold 完整备份</strong><small>整个本地仓库、分支和草稿</small></span></button><button type="button" data-action="export-session" data-format="codex"><span class="format-mark">CX</span><span><strong>Codex CLI JSONL</strong><small>导出当前分支</small></span></button><button type="button" data-action="export-session" data-format="claude"><span class="format-mark">CL</span><span><strong>Claude Code JSONL</strong><small>导出当前消息树</small></span></button><button type="button" data-action="export-session" data-format="omp"><span class="format-mark">OP</span><span><strong>OMP JSONL</strong><small>导出当前消息树</small></span></button></div></details>`;
-  const canCreate = Boolean(provider() && state.model);
-  return `<button class="history-backdrop${state.historyOpen ? " open" : ""}" type="button" aria-label="关闭历史记录" data-action="close-history"></button><aside class="history-sidebar${state.historyOpen ? " open" : ""}" aria-label="聊天历史"><div class="history-heading"><strong>聊天历史</strong><div>${transferMenu}<button type="button" data-action="toggle-history-tree" aria-label="${state.historyTree ? "平铺显示" : "树状显示"}">${state.historyTree ? icons.list : icons.tree}</button><button type="button" data-action="new-conversation" aria-label="新对话"${canCreate ? "" : " disabled"}>${icons.plus}</button><button class="history-close" type="button" data-action="close-history" aria-label="关闭历史记录">${icons.close}</button></div></div><div class="history-list">${renderHistoryItems()}</div></aside>`;
+  return `<button class="history-backdrop${state.historyOpen ? " open" : ""}" type="button" aria-label="关闭历史记录" data-action="close-history"></button><aside class="history-sidebar${state.historyOpen ? " open" : ""}" aria-label="聊天历史"><div class="history-heading"><strong>聊天历史</strong><div>${transferMenu}<button type="button" data-action="toggle-history-tree" aria-label="${state.historyTree ? "平铺显示" : "树状显示"}">${state.historyTree ? icons.list : icons.tree}</button><button type="button" data-action="new-conversation" aria-label="新对话">${icons.plus}</button><button class="history-close" type="button" data-action="close-history" aria-label="关闭历史记录">${icons.close}</button></div></div><div class="history-list">${renderHistoryItems()}</div></aside>`;
 }
 
 function activeReplyTargetId() {
@@ -495,17 +511,18 @@ function renderMessagesMarkup() {
 function renderWorkingPanel() {
   const drafts = state.workingItems.filter((item) => item.kind === "user-draft" && item.id !== state.activeDraftId);
   const unfinished = state.workingItems.filter((item) => item.kind === "assistant-stream" && item.status !== "streaming");
-  const requestAssistantReply = activeDraft()?.requestAssistantReply ?? true;
+  const responseModelAvailable = Boolean(configuredResponseModel());
+  const requestAssistantReply = responseModelAvailable && (activeDraft()?.requestAssistantReply ?? true);
   const assistantReplyToggle = state.advancedActions
-    ? `<label class="assistant-reply-toggle"><input type="checkbox" data-action="request-assistant-reply"${requestAssistantReply ? " checked" : ""}>需要回答</label>`
+    ? `<label class="assistant-reply-toggle"${responseModelAvailable ? "" : ' title="请先配置并选择模型"'}><input type="checkbox" data-action="request-assistant-reply"${requestAssistantReply ? " checked" : ""}${responseModelAvailable ? "" : " disabled"}>需要回答</label>`
     : "";
   const draftRows = drafts.map((item) => {
     const text = workingItemText(item).trim().replace(/\s+/g, " ");
-    return `<div class="draft-row"><button type="button" data-action="select-draft" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(text.slice(0, 36) || "空白草稿")}</strong><small>${draftLabel(item)} · ${new Date(item.updatedAt).toLocaleString()}</small></button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" aria-label="删除草稿">${icons.trash}</button></div>`;
+    return `<div class="draft-row" data-dom-key="draft:${escapeHtml(item.id)}"><button type="button" data-action="select-draft" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(text.slice(0, 36) || "空白草稿")}</strong><small>${draftLabel(item)} · ${new Date(item.updatedAt).toLocaleString()}</small></button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" aria-label="删除草稿">${icons.trash}</button></div>`;
   }).join("");
   const unfinishedRows = unfinished.map((item) => {
     const text = workingItemText(item).trim().replace(/\s+/g, " ");
-    return `<div class="unfinished-row"><span><strong>未完成回答</strong><small>${escapeHtml(text.slice(0, 64) || "尚未输出正文")} · ${new Date(item.updatedAt).toLocaleString()}</small></span><button type="button" data-action="commit-partial" data-id="${escapeHtml(item.id)}">保留</button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}">清理</button></div>`;
+    return `<div class="unfinished-row" data-dom-key="unfinished:${escapeHtml(item.id)}"><span><strong>未完成回答</strong><small>${escapeHtml(text.slice(0, 64) || "尚未输出正文")} · ${new Date(item.updatedAt).toLocaleString()}</small></span><button type="button" data-action="commit-partial" data-id="${escapeHtml(item.id)}">保留</button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}">清理</button></div>`;
   }).join("");
   const canStash = canStashActiveDraft();
   return `<div class="working-panel">${assistantReplyToggle}${renderComposerControls(activeDraft())}${unfinishedRows ? `<details class="unfinished-menu"><summary>未完成 ${unfinished.length}</summary><div>${unfinishedRows}</div></details>` : ""}<details class="draft-menu"><summary>草稿 ${drafts.length}</summary><div><button class="stash-draft" type="button" data-action="stash-draft" aria-label="将当前编辑区收起为草稿" title="${canStash ? "将当前编辑区收起到草稿列表" : "当前编辑区为空"}"${canStash ? "" : " disabled"}>${icons.stash}收起为草稿</button>${draftRows}</div></details></div>`;
@@ -543,7 +560,7 @@ function renderComposerControls(draft: WorkingItem | null) {
 
 function updateComposerControls() {
   const controls = root.querySelector<HTMLElement>(".composer-controls");
-  if (controls) controls.outerHTML = renderComposerControls(activeDraft());
+  if (controls) reconcileElement(controls, renderComposerControls(activeDraft()), appDomReconcileOptions);
 }
 
 function renderBranchPreviewNotice() {
@@ -557,8 +574,8 @@ function renderThread() {
   const editRole = draft?.messageRole === "assistant" ? "助手回答" : "用户消息";
   const fullscreen = state.composerFullscreen;
   const queued = draft?.id === state.queuedDraftId;
-  const providerAvailable = Boolean(provider() && state.model);
-  const note = !providerAvailable ? "当前会话的 Provider 不可用；草稿仍会保存在此浏览器。" : queued ? "已排队；会在当前回答完成后提交。" : state.offline ? "离线模式：提交保存在本地仓库，联网后自动 push。" : "草稿自动保存在此浏览器；模型可能会出错。";
+  const responseModelAvailable = Boolean(configuredResponseModel());
+  const note = !responseModelAvailable ? "消息仍会保存；配置模型后才能请求回答。" : queued ? "已排队；会在当前回答完成后提交。" : state.offline ? "离线模式：提交保存在本地仓库，联网后自动 push。" : "草稿自动保存在此浏览器；模型可能会出错。";
   const editorLabel = editing ? `正在编辑${editRole}` : "全屏编辑";
   const fullscreenHeader = fullscreen
     ? `<header class="fullscreen-editor-header"><span><strong>${editorLabel}</strong><small>草稿自动保存在此浏览器</small></span><button type="button" data-action="toggle-composer-fullscreen" aria-label="退出全屏编辑" title="退出全屏编辑（Esc）">${icons.close}</button></header>`
@@ -566,7 +583,7 @@ function renderThread() {
   const placeholder = fullscreen
     ? editing ? "编辑消息；Ctrl/⌘ + Enter 提交" : "输入消息；Ctrl/⌘ + Enter 提交"
     : editing ? "编辑消息，提交后从此处继续" : "输入消息，Enter 发送，Shift + Enter 换行";
-  return `<section class="thread-root"><div class="thread-viewport" id="thread-viewport">${renderBranchPreviewNotice()}<div id="message-list">${renderMessagesMarkup()}</div><div class="thread-footer${fullscreen ? " fullscreen-editor" : ""}">${fullscreenHeader}<button class="scroll-button" type="button" data-action="scroll-bottom" aria-label="滚动到底部">${icons.scroll}</button>${renderWorkingPanel()}${editing ? `<div class="edit-context"><span>正在编辑${editRole}；提交后当前会话将从这里继续</span><button type="button" data-action="cancel-edit">取消</button></div>` : ""}<form class="composer" id="composer"><textarea class="composer-input" name="message" placeholder="${placeholder}" rows="1" aria-label="聊天消息">${escapeHtml(draft ? workingItemText(draft) : "")}</textarea><div class="composer-actions">${state.streaming ? `<button class="stop-button" type="button" data-action="stop" aria-label="停止生成">${icons.stop}</button>` : ""}<button class="fullscreen-button" type="button" data-action="toggle-composer-fullscreen" aria-label="${fullscreen ? "退出全屏编辑" : "进入全屏编辑"}" title="${fullscreen ? "退出全屏编辑" : "全屏编辑"}"${fullscreen ? "" : " hidden"}>${fullscreen ? icons.collapse : icons.expand}</button></div>${renderModelPicker()}<button class="send-button" type="submit" data-action="send" aria-label="${state.streaming ? "排队发送" : "发送消息"}"${providerAvailable ? "" : " disabled"}>${icons.send}</button></form><p class="composer-note${state.offline ? " offline" : ""}${queued ? " queued" : ""}">${note}</p></div></div></section>`;
+  return `<section class="thread-root"><div class="thread-viewport" id="thread-viewport">${renderBranchPreviewNotice()}<div id="message-list">${renderMessagesMarkup()}</div><div class="thread-footer${fullscreen ? " fullscreen-editor" : ""}">${fullscreenHeader}<button class="scroll-button" type="button" data-action="scroll-bottom" aria-label="滚动到底部">${icons.scroll}</button>${renderWorkingPanel()}${editing ? `<div class="edit-context"><span>正在编辑${editRole}；提交后当前会话将从这里继续</span><button type="button" data-action="cancel-edit">取消</button></div>` : ""}<form class="composer" id="composer"><textarea class="composer-input" name="message" placeholder="${placeholder}" rows="1" aria-label="聊天消息">${escapeHtml(draft ? workingItemText(draft) : "")}</textarea><div class="composer-actions">${state.streaming ? `<button class="stop-button" type="button" data-action="stop" aria-label="停止生成">${icons.stop}</button>` : ""}<button class="fullscreen-button" type="button" data-action="toggle-composer-fullscreen" aria-label="${fullscreen ? "退出全屏编辑" : "进入全屏编辑"}" title="${fullscreen ? "退出全屏编辑" : "全屏编辑"}"${fullscreen ? "" : " hidden"}>${fullscreen ? icons.collapse : icons.expand}</button></div>${renderModelPicker()}<button class="send-button" type="submit" data-action="send" aria-label="${state.streaming ? "排队发送" : "发送消息"}">${icons.send}</button></form><p class="composer-note${state.offline ? " offline" : ""}${queued ? " queued" : ""}">${note}</p></div></div></section>`;
 }
 
 const compactComposerLineLimit = 3;
@@ -576,6 +593,7 @@ function syncComposerInputLayout(input = root.querySelector<HTMLTextAreaElement>
   const fullscreenButton = input.form?.querySelector<HTMLButtonElement>(".fullscreen-button");
   if (fullscreenButton) fullscreenButton.hidden = true;
   input.style.height = "auto";
+  if (!input.value) return;
   const style = window.getComputedStyle(input);
   const lineHeight = Number.parseFloat(style.lineHeight);
   const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
@@ -644,21 +662,21 @@ function renderIdentitySyncControl(profile: ChatProfile) {
 }
 
 function renderApp() {
-  clearMathTypesetting(root);
   if (state.error) {
-    root.innerHTML = `<main class="state-page"><div class="state-card"><span class="state-mark">!</span><h1>聊天服务暂时不可用</h1><p>${escapeHtml(state.error)}</p>${renderProviderSettings()}</div></main>`;
+    reconcileHtml(root, `<main class="state-page"><div class="state-card"><span class="state-mark">!</span><h1>聊天服务暂时不可用</h1><p>${escapeHtml(state.error)}</p>${renderProviderSettings()}</div></main>`, appDomReconcileOptions);
     return;
   }
   if (state.loading || !state.config) {
-    root.innerHTML = '<main class="state-page"><div class="state-card"><span class="loader"></span><p>正在读取本地工作区…</p></div></main>';
+    reconcileHtml(root, '<main class="state-page"><div class="state-card"><span class="loader"></span><p>正在读取本地工作区…</p></div></main>', appDomReconcileOptions);
     return;
   }
   const profile = state.config.profile;
   const usableProvider = state.config.providers.some((item) => item.models.length > 0);
   const workspace = state.conversation
     ? renderThread()
-    : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>${usableProvider ? "开始一个新对话" : state.config.providers.length ? "为 Provider 添加模型" : "启用你的第一个 Provider"}</h1><p>${usableProvider ? "当前模型已就绪，可以创建对话。" : state.config.providers.length ? "手动填写模型 ID，或在 Provider 设置中刷新模型列表。" : "选择一个预置并保存本地覆盖，或添加自定义 Provider。凭据只保存在当前浏览器。"}</p><button type="button" data-action="${usableProvider ? "new-conversation" : "open-provider-settings"}">${usableProvider ? "新对话" : "打开 Provider 设置"}</button></section>`;
-  root.innerHTML = `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${renderIdentitySyncControl(profile)}</div></header>${renderHistory()}${workspace}${renderImportPanel()}${renderSettingsPage()}</main>`;
+    : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>开始一个新对话</h1><p>${usableProvider ? "当前模型已就绪，也可以只记录消息而不请求回答。" : "无需配置模型即可记录消息；配置模型后才能勾选“需要回答”。"}</p><button type="button" data-action="new-conversation">新对话</button></section>`;
+  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${renderIdentitySyncControl(profile)}</div></header>${renderHistory()}${workspace}${renderImportPanel()}${renderSettingsPage()}</main>`, appDomReconcileOptions);
+  if (state.conversation) renderMessages();
   window.requestAnimationFrame(() => syncComposerInputLayout());
   scheduleMathTypesetting(root);
   void updateAvatar();
@@ -676,8 +694,10 @@ function renderMessages(scroll = false) {
   const reasoningOpenStates = captureReasoningOpenStates(list);
   const messages = displayedMessages();
   if (!messages.length) {
-    clearMathTypesetting(list);
-    list.innerHTML = renderMessagesMarkup();
+    if (!list.querySelector(".welcome")) {
+      clearMathTypesetting(list);
+      list.innerHTML = renderMessagesMarkup();
+    }
   } else if (list.querySelector(".welcome")) {
     clearMathTypesetting(list);
     list.innerHTML = renderMessagesMarkup();
@@ -1203,9 +1223,10 @@ function checkpointWorkingItem(item: WorkingItem) {
 
 async function generateAssistant(baseMessages: StoredChatMessage[]) {
   if (!state.conversation) return;
-  const responseProvider = provider();
-  if (!responseProvider || !state.model) throw new Error("当前会话的 Provider 不可用；请先在设置中添加或选择 Provider");
-  const responseModel = state.model;
+  const configured = configuredResponseModel();
+  if (!configured) throw new Error("当前会话没有可用模型；请先在设置中配置并选择模型");
+  const responseProvider = configured.provider;
+  const responseModel = configured.model;
   const conversationId = state.conversation.id;
   const baseHeadId = state.conversation.headMessageId;
   const attemptId = uuid();
@@ -1350,7 +1371,6 @@ async function generateAssistant(baseMessages: StoredChatMessage[]) {
 
 async function sendMessage(text: string) {
   if (!state.conversation || !text.trim()) return;
-  if (!provider() || !state.model) throw new Error("当前会话的 Provider 不可用；请先在设置中添加或选择 Provider");
   const draft = activeDraft();
   if (state.streaming) {
     if (!draft) return;
@@ -1415,9 +1435,11 @@ async function sendMessage(text: string) {
   await refreshConversations();
   renderApp();
   scheduleRepositorySync();
-  const requestAssistantReply = state.advancedActions
-    ? draft?.requestAssistantReply ?? true
-    : draft?.messageRole !== "assistant";
+  const requestAssistantReply = requestAssistantReplyForSubmission(
+    draft,
+    state.advancedActions,
+    Boolean(configuredResponseModel())
+  );
   if (requestAssistantReply) await generateAssistant(state.conversation.messages);
 }
 
@@ -1554,8 +1576,8 @@ async function confirmBranchPreview() {
 
 async function newConversation() {
   const item = provider();
-  if (!item || !state.model) return;
-  const created = await createConversationHistory(item.id, state.model, state.generationSettings, "");
+  const configured = configuredResponseModel();
+  const created = await createConversationHistory(item?.id || "", configured?.model || "", state.generationSettings, "");
   state.conversation = created;
   state.workingItems = [];
   state.activeDraftId = "";
@@ -1606,9 +1628,17 @@ function scheduleSettingsSave() {
 }
 
 function openProviderEditor(providerId = "") {
+  state.providerSetupController?.abort();
   state.settingsOpen = true;
   state.providerEditorOpen = true;
   state.providerEditorId = providerId;
+  state.providerEditorMode = "simple";
+  state.providerSetupKind = "catalog";
+  state.providerSetupUrl = "";
+  state.providerSetupKey = "";
+  state.providerSetupBusy = false;
+  state.providerSetupError = "";
+  state.providerSetupController = null;
   state.providerModelEditorOpen = false;
   state.providerModelProviderId = "";
   state.providerModelPresetId = "";
@@ -1620,11 +1650,23 @@ function openProviderEditor(providerId = "") {
   });
 }
 
+function closeProviderEditor() {
+  state.providerSetupController?.abort();
+  state.providerEditorOpen = false;
+  state.providerEditorId = "";
+  state.providerEditorMode = "simple";
+  state.providerSetupKind = "catalog";
+  state.providerSetupUrl = "";
+  state.providerSetupKey = "";
+  state.providerSetupBusy = false;
+  state.providerSetupError = "";
+  state.providerSetupController = null;
+}
+
 function openProviderModelEditor(providerId: string) {
   if (!state.config?.providers.some((item) => item.id === providerId)) return;
   state.settingsOpen = true;
-  state.providerEditorOpen = false;
-  state.providerEditorId = "";
+  closeProviderEditor();
   state.providerModelEditorOpen = true;
   state.providerModelProviderId = providerId;
   state.providerModelPresetId = "";
@@ -1673,8 +1715,7 @@ async function resetModelsDevCatalog() {
 
 function openProviderSettings() {
   state.settingsOpen = true;
-  state.providerEditorOpen = false;
-  state.providerEditorId = "";
+  closeProviderEditor();
   closeProviderModelEditor();
   renderApp();
   window.requestAnimationFrame(() => root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"}));
@@ -1720,12 +1761,98 @@ function providerHeadersFromJson(value: string) {
   return headers;
 }
 
+async function persistProviderProfile(profileInput: ChatProvider, apiKey: string) {
+  if (!state.config) throw new Error("Provider 配置尚未加载");
+  const existing = state.config.providers.find((item) => item.id === profileInput.id);
+  const activeProviderMissing = Boolean(state.providerId && !state.config.providers.some((item) => item.id === state.providerId));
+  const profile = await saveLocalProviderProfile(profileInput) as ChatProvider;
+  if (profile.auth.type === "none") await deleteLocalCredential(profile.id);
+  else if (apiKey) await saveLocalCredential(profile.id, "default", {apiKey});
+  state.localCredentials = await listLocalCredentials();
+  state.config.providers = existing
+    ? state.config.providers.map((item) => item.id === profile.id ? profile : item)
+    : [...state.config.providers, profile];
+  if (!state.providerId || activeProviderMissing || state.providerId === profile.id) {
+    state.providerId = profile.id;
+    state.model = settingsForProvider(profile).model;
+    if (state.conversation) {
+      state.conversation = {...state.conversation, providerId: profile.id, model: state.model};
+      scheduleSettingsSave();
+    }
+  }
+  window.localStorage.setItem("turnfold-provider", profile.id);
+  if (state.model) window.localStorage.setItem(`turnfold-model:${profile.id}`, state.model);
+  closeProviderEditor();
+  await cacheChatConfig(state.identityKey, {profile: state.config.profile});
+  renderApp();
+  return profile;
+}
+
+async function saveCatalogProviderForm(form: HTMLFormElement) {
+  if (!state.config) return;
+  const providerId = formValue(form, "provider-catalog-id");
+  const template = selectableCatalogProviderProfiles(state.modelsDevCatalog).find((item) => item.id === providerId);
+  if (!template) throw new Error("所选 Provider 已不在当前模型目录中");
+  if (state.config.providers.some((item) => item.id === providerId)) throw new Error("该 Provider 已启用");
+  const apiKey = formValue(form, "provider-api-key");
+  if (template.auth.type !== "none" && !apiKey) throw new Error("请输入 API Key");
+  const timestamp = messageNow();
+  await persistProviderProfile({
+    ...template,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }, apiKey);
+}
+
+async function saveProviderCredentialForm(form: HTMLFormElement) {
+  const provider = state.config?.providers.find((item) => item.id === state.providerEditorId);
+  if (!provider) throw new Error("Provider 已不存在");
+  const apiKey = formValue(form, "provider-api-key");
+  const credential = localCredential(provider.id);
+  if (provider.auth.type !== "none" && !apiKey && !credential?.secret.apiKey) throw new Error("请输入 API Key");
+  if (provider.auth.type === "none") await deleteLocalCredential(provider.id);
+  else if (apiKey) await saveLocalCredential(provider.id, "default", {apiKey});
+  state.localCredentials = await listLocalCredentials();
+  closeProviderEditor();
+  renderApp();
+}
+
+async function saveDetectedProviderForm(form: HTMLFormElement) {
+  if (!state.config || state.providerSetupBusy) return;
+  state.providerSetupUrl = formValue(form, "provider-url");
+  state.providerSetupKey = formValue(form, "provider-api-key");
+  state.providerSetupController?.abort();
+  const controller = new AbortController();
+  state.providerSetupController = controller;
+  state.providerSetupBusy = true;
+  state.providerSetupError = "";
+  renderApp();
+  try {
+    const detected = await autoDetectProvider(
+      state.providerSetupUrl,
+      state.providerSetupKey,
+      state.config.providers.map((item) => item.id),
+      fetch,
+      controller.signal
+    );
+    if (state.providerSetupController !== controller) return;
+    state.providerSetupController = null;
+    const timestamp = messageNow();
+    await persistProviderProfile({...detected, createdAt: timestamp, updatedAt: timestamp}, state.providerSetupKey);
+  } catch (error) {
+    if (state.providerSetupController !== controller) return;
+    state.providerSetupController = null;
+    state.providerSetupBusy = false;
+    state.providerSetupError = error instanceof Error ? error.message : "Provider 自动探测失败";
+    renderApp();
+  }
+}
+
 async function saveProviderForm(form: HTMLFormElement) {
   if (!state.config) return;
   const existing = state.config.providers.find((item) => item.id === state.providerEditorId);
-  const preset = getProviderPreset(state.providerEditorId);
-  const template = existing || preset;
-  const activeProviderMissing = Boolean(state.providerId && !state.config.providers.some((item) => item.id === state.providerId));
+  const embedded = getEmbeddedProviderProfile(state.providerEditorId);
+  const template = existing || embedded;
   const providerId = validProviderId(formValue(form, "provider-id"));
   const name = formValue(form, "provider-name");
   const protocol = formValue(form, "provider-protocol") as ProviderProtocol;
@@ -1758,28 +1885,7 @@ async function saveProviderForm(form: HTMLFormElement) {
     createdAt: existing?.createdAt || timestamp,
     updatedAt: timestamp
   };
-  const profile = await saveLocalProviderProfile(profileInput) as ChatProvider;
-  const apiKey = formValue(form, "provider-api-key");
-  if (authType === "none") await deleteLocalCredential(profile.id);
-  else if (apiKey) await saveLocalCredential(profile.id, "default", {apiKey});
-  state.localCredentials = await listLocalCredentials();
-  state.config.providers = existing
-    ? state.config.providers.map((item) => item.id === profile.id ? profile : item)
-    : [...state.config.providers, profile];
-  if (!state.providerId || activeProviderMissing || state.providerId === profile.id) {
-    state.providerId = profile.id;
-    state.model = settingsForProvider(profile).model;
-    if (state.conversation) {
-      state.conversation = {...state.conversation, providerId: profile.id, model: state.model};
-      scheduleSettingsSave();
-    }
-  }
-  window.localStorage.setItem("turnfold-provider", profile.id);
-  if (state.model) window.localStorage.setItem(`turnfold-model:${profile.id}`, state.model);
-  state.providerEditorOpen = false;
-  state.providerEditorId = "";
-  await cacheChatConfig(state.identityKey, {profile: state.config.profile});
-  renderApp();
+  await persistProviderProfile(profileInput, formValue(form, "provider-api-key"));
 }
 
 async function saveProviderModelForm(form: HTMLFormElement) {
@@ -1790,8 +1896,7 @@ async function saveProviderModelForm(form: HTMLFormElement) {
   if (!modelId) throw new Error("模型 ID 不能为空");
   if (/\s/.test(modelId)) throw new Error("模型 ID 不能包含空白字符");
   const modelName = formValue(form, "provider-model-name") || modelId;
-  const template = getProviderPreset(provider.id)?.models.find((model) => model.id === modelId)
-    || modelsDevModel(state.modelsDevCatalog, provider.id, modelId)
+  const template = modelsDevModel(state.modelsDevCatalog, provider.id, modelId)
     || provider.models.find((model) => model.id === modelId);
   const model: ProviderModel = {...template, id: modelId, name: modelName, source: "manual"};
   const models = [...provider.models];
@@ -1837,9 +1942,9 @@ async function probeProvider(providerId: string) {
 async function removeProvider(providerId: string) {
   if (!state.config) return;
   const item = state.config.providers.find((candidate) => candidate.id === providerId);
-  const presetOverride = isProviderPreset(providerId);
-  const prompt = presetOverride
-    ? `禁用预置 Provider“${item?.name || providerId}”并删除其本地覆盖和凭据？历史对话不会删除。`
+  const embeddedProvider = isEmbeddedProvider(providerId);
+  const prompt = embeddedProvider
+    ? `禁用内嵌 Provider“${item?.name || providerId}”并删除其本地配置和凭据？历史对话不会删除。`
     : `删除此浏览器中的 Provider“${item?.name || providerId}”及其凭据？历史对话不会删除。`;
   if (!item || !window.confirm(prompt)) return;
   await deleteLocalProviderProfile(providerId);
@@ -1852,8 +1957,7 @@ async function removeProvider(providerId: string) {
     state.model = state.conversation?.providerId === providerId ? state.conversation.model : replacement ? settingsForProvider(replacement).model : "";
   }
   if (state.providerEditorId === providerId) {
-    state.providerEditorOpen = false;
-    state.providerEditorId = "";
+    closeProviderEditor();
   }
   if (state.providerModelProviderId === providerId) closeProviderModelEditor();
   await cacheChatConfig(state.identityKey, {profile: state.config.profile});
@@ -1962,7 +2066,7 @@ async function initialize() {
   state.offline = !navigator.onLine;
   if (!state.config.providers.length) {
     state.settingsOpen = true;
-    state.providerEditorOpen = false;
+    openProviderEditor();
   }
   renderApp();
   if (!state.config.providers.length) window.requestAnimationFrame(() => {
@@ -2005,6 +2109,21 @@ async function initialize() {
 
 root.addEventListener("submit", (event) => {
   if (!(event.target instanceof HTMLFormElement)) return;
+  if (event.target.matches("[data-provider-catalog-form]")) {
+    event.preventDefault();
+    void saveCatalogProviderForm(event.target).catch(showError);
+    return;
+  }
+  if (event.target.matches("[data-provider-detect-form]")) {
+    event.preventDefault();
+    void saveDetectedProviderForm(event.target);
+    return;
+  }
+  if (event.target.matches("[data-provider-credential-form]")) {
+    event.preventDefault();
+    void saveProviderCredentialForm(event.target).catch(showError);
+    return;
+  }
   if (event.target.matches("[data-provider-model-form]")) {
     event.preventDefault();
     void saveProviderModelForm(event.target).catch(showError);
@@ -2029,8 +2148,7 @@ root.addEventListener("keydown", (event) => {
       return;
     }
     if (state.providerEditorOpen) {
-      state.providerEditorOpen = false;
-      state.providerEditorId = "";
+      closeProviderEditor();
       renderApp();
       return;
     }
@@ -2077,22 +2195,14 @@ root.addEventListener("input", (event) => {
   }
   if (target instanceof HTMLInputElement && target.dataset.action === "model-search") {
     state.modelQuery = target.value;
-    const details = target.closest("details");
     renderApp();
-    const next = root.querySelector<HTMLInputElement>('[data-action="model-search"]');
-    const nextDetails = next?.closest("details");
-    if (nextDetails) nextDetails.open = true;
-    next?.focus();
-    next?.setSelectionRange(next.value.length, next.value.length);
-    if (details?.open && nextDetails) nextDetails.open = true;
   }
   if (target instanceof HTMLInputElement && target.dataset.action === "provider-model-search") {
     state.providerModelQuery = target.value;
     renderApp();
-    const next = root.querySelector<HTMLInputElement>('[data-action="provider-model-search"]');
-    next?.focus();
-    next?.setSelectionRange(next.value.length, next.value.length);
   }
+  if (target instanceof HTMLInputElement && target.dataset.action === "provider-setup-url") state.providerSetupUrl = target.value;
+  if (target instanceof HTMLInputElement && target.dataset.action === "provider-setup-key") state.providerSetupKey = target.value;
   if (target instanceof HTMLInputElement && target.dataset.action === "import-title-template") {
     state.importTitleTemplate = target.value;
     window.localStorage.setItem("turnfold-import-title-template", target.value);
@@ -2141,7 +2251,8 @@ root.addEventListener("change", (event) => {
   }
   if (target.dataset.action === "request-assistant-reply" && target instanceof HTMLInputElement && state.conversation) {
     void ensureActiveDraft().then(async (draft) => {
-      draft.requestAssistantReply = target.checked;
+      draft.requestAssistantReply = Boolean(configuredResponseModel()) && target.checked;
+      target.checked = draft.requestAssistantReply;
       await persistWorkingItem(draft);
     }).catch(showError);
     return;
@@ -2168,12 +2279,14 @@ root.addEventListener("click", (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "open-settings") { state.settingsOpen = true; state.modelQuery = ""; renderApp(); }
-  if (action === "close-settings") { state.settingsOpen = false; state.providerEditorOpen = false; state.providerEditorId = ""; closeProviderModelEditor(); state.modelQuery = ""; renderApp(); }
+  if (action === "close-settings") { state.settingsOpen = false; closeProviderEditor(); closeProviderModelEditor(); state.modelQuery = ""; renderApp(); }
   if (action === "open-provider-settings") openProviderSettings();
   if (action === "add-provider") openProviderEditor();
-  if (action === "enable-provider-preset" && button.dataset.provider) openProviderEditor(button.dataset.provider);
   if (action === "edit-provider" && button.dataset.provider) openProviderEditor(button.dataset.provider);
-  if (action === "cancel-provider-edit") { state.providerEditorOpen = false; state.providerEditorId = ""; renderApp(); }
+  if (action === "cancel-provider-edit") { closeProviderEditor(); renderApp(); }
+  if (action === "provider-simple-mode") { state.providerEditorMode = "simple"; state.providerSetupError = ""; renderApp(); }
+  if (action === "provider-advanced-mode") { state.providerEditorMode = "advanced"; state.providerSetupError = ""; renderApp(); }
+  if (action === "provider-setup-kind" && (button.dataset.kind === "catalog" || button.dataset.kind === "detect")) { state.providerSetupKind = button.dataset.kind; state.providerSetupError = ""; renderApp(); }
   if (action === "add-provider-model" && button.dataset.provider) openProviderModelEditor(button.dataset.provider);
   if (action === "select-provider-model-preset" && button.dataset.model) { state.providerModelPresetId = button.dataset.model; renderApp(); }
   if (action === "cancel-provider-model-edit") { closeProviderModelEditor(); renderApp(); }

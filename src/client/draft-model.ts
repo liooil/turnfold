@@ -21,6 +21,17 @@ export function messageNow() {
   return new Date().toISOString();
 }
 
+export function requestAssistantReplyForSubmission(
+  draft: WorkingItem | null,
+  advancedActions: boolean,
+  responseModelAvailable: boolean
+) {
+  if (!responseModelAvailable) return false;
+  return advancedActions
+    ? draft?.requestAssistantReply ?? true
+    : draft?.messageRole !== "assistant";
+}
+
 export function createDraftModel(state: AppState, dependencies: {uuid: () => string; displayedHeadId: () => string | null}) {
   function activeDraft() {
     return state.workingItems.find((item) => item.id === state.activeDraftId && item.kind === "user-draft") || null;

@@ -104,6 +104,7 @@ const distributedOwner = {username: "distributed-owner", sub: "distributed-sub"}
 const longHistoryOwner = {username: "long-history-owner", sub: "long-history-sub"};
 const localRepositoryOwner = {username: "local-repository-owner", sub: "local-repository-sub"};
 const untitledOwner = {username: "untitled-owner", sub: "untitled-sub"};
+const noModelOwner = {username: "no-model-owner", sub: "no-model-sub"};
 let server;
 try {
   server = await startServer();
@@ -247,6 +248,17 @@ try {
     body: JSON.stringify({haveObjectIds: [distributedMessage.id]})
   });
   assert.deepEqual(fetchedWithHave.payload.objects, []);
+  const noModelPush = await api(server.origin, noModelOwner, "/api/sync/push", {
+    method: "POST",
+    body: JSON.stringify({
+      objects: [],
+      refs: [{...distributedRef, conversationId: "no-model-conversation", headMessageId: null, providerId: "", model: ""}]
+    })
+  });
+  assert.equal(noModelPush.response.status, 200);
+  assert.equal(noModelPush.payload.refs[0].status, "ok");
+  assert.equal(noModelPush.payload.refs[0].ref.providerId, "");
+  assert.equal(noModelPush.payload.refs[0].ref.model, "");
   const alternateMessage = await createMessageObject({
     parentMessageId: null,
     role: "user",

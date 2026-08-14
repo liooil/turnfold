@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {createDraftModel, workingItemText} from "./draft-model.ts";
+import {createDraftModel, requestAssistantReplyForSubmission, workingItemText} from "./draft-model.ts";
 
 describe("draft model", () => {
   test("creates branch-aware drafts and selects the active draft", () => {
@@ -14,5 +14,17 @@ describe("draft model", () => {
     expect(workingItemText(draft)).toBe("continue");
     expect(drafts.activeDraft()).toBe(draft);
     expect(drafts.canStashActiveDraft()).toBe(true);
+  });
+
+  test("never requests an answer without a configured response model", () => {
+    const draft = {messageRole: "user", requestAssistantReply: true};
+    expect(requestAssistantReplyForSubmission(draft, true, false)).toBe(false);
+    expect(requestAssistantReplyForSubmission(draft, false, false)).toBe(false);
+  });
+
+  test("respects the answer toggle when a response model is available", () => {
+    expect(requestAssistantReplyForSubmission({messageRole: "user", requestAssistantReply: false}, true, true)).toBe(false);
+    expect(requestAssistantReplyForSubmission({messageRole: "user", requestAssistantReply: true}, true, true)).toBe(true);
+    expect(requestAssistantReplyForSubmission({messageRole: "assistant"}, false, true)).toBe(false);
   });
 });

@@ -67,7 +67,7 @@ describe("local Provider runtime", () => {
     }
   });
 
-  test("discovers models independently from the preset catalog", () => {
+  test("discovers models independently from the embedded catalog", () => {
     expect(inferredDiscoveryUrl(profile("openai-chat"))).toBe("https://models.example/v1/models");
     expect(normalizeDiscoveredModels({data: [{id: "model-a", owned_by: "local"}]})).toEqual([
       {id: "model-a", name: "model-a", ownedBy: "local", source: "discovered"}

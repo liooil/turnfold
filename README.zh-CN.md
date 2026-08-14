@@ -19,9 +19,10 @@ Turnfold 是一个本地优先、用于管理分支式 AI 对话的仓库。
 - 基于 IndexedDB 的本地优先仓库，支持离线渲染和待同步队列。
 - 不可变消息、具名会话引用、分支导航和引用日志历史。
 - 多个可持久化草稿，以及可恢复的助手流式回答。
-- 内置不含凭据的 Provider 预置目录，来源于 KeyVault 并参考 OMP；所有预置都需要用户保存本地覆盖后才会启用。
+- 从内嵌 Models.dev 子集生成不含凭据的 Provider 连接配置；所有 Provider 默认禁用。
 - 内嵌 Models.dev 的 12 个精选模型；完整目录只会在用户明确点击后下载或更新，并保存在当前浏览器。
-- 支持浏览器直连的自定义 Provider 与本地覆盖；凭据不会进入预置目录。
+- 支持浏览器直连的自定义 Provider 与内嵌 Provider 本地配置；凭据不会进入内嵌目录。
+- Provider 默认使用两步式简单配置：从模型目录选择并填写凭据，或只输入 URL 与 Key 自动探测；原有完整表单保留为进阶配置。
 - 使用手写 SSE 客户端支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Generative AI 协议。
 - 支持原生归档，以及 Codex CLI、Claude Code 和 OMP JSONL 格式的导入与导出。
 - 支持从多个文件、ZIP 压缩包或只读本地目录批量导入。
@@ -38,7 +39,7 @@ Turnfold 当前规定每条消息只有一个父消息。因此它形成的是�
 docker compose up --build -d
 ```
 
-打开 <http://localhost:3000>，检查并保存一个预置 Provider 的本地覆盖以将其启用，或者添加自定义 Provider。模型 ID 可以手动填写，也可以刷新模型列表。
+打开 <http://localhost:3000>，检查并保存一个内嵌 Provider 以将其启用，或者添加自定义 Provider。模型 ID 可以手动填写，也可以刷新模型列表。
 
 默认 Compose 配置使用 `AUTH_MODE=single-user`，只适合 localhost 或可信私有网络。不要把该模式直接暴露到公网。
 
@@ -77,7 +78,7 @@ docker compose config
 
 `forward-auth` 接受 `X-Turnfold-Username` 和 `X-Turnfold-Sub`。为保持兼容，也支持 Authentik 的 `X-Authentik-Username` 和 `X-Authentik-Uid`。反向代理必须先移除客户端传入的不可信身份请求头，再写入自己的身份请求头。
 
-内置预置目录只包含端点模板和模型 ID，不包含凭据，并且默认全部禁用。启用预置会创建同 ID 的本地覆盖。添加模型时，Turnfold 会列出尚未被同 ID 本地模型或发现模型覆盖的预置模型。Provider 覆盖、模型覆盖、自定义配置、发现的模型列表、请求头和凭据都只保存在当前浏览器中。模型请求由浏览器直接发送到所配置的端点，Bun 服务器不参与。Provider 因此必须允许 Turnfold 来源通过 CORS；访问局域网端点时，浏览器还可能请求本地网络访问权限。
+内嵌 Provider 及其模型完全由内嵌 Models.dev 子集生成；Turnfold 只补充浏览器运行时所需的协议、认证方式和 API 端点。它们不包含凭据，并且默认全部禁用。简单配置可直接选择内嵌或已下载目录中的 Provider 并填写凭据；也可只输入 URL 与 Key，让 Turnfold 探测协议和模型，并根据网页标题或域名生成标识与名称。进阶配置保留标识、协议、认证、端点、默认模型和附加 Headers 等全部字段。Provider 配置、模型覆盖、自定义配置、发现的模型列表、请求头和凭据都只保存在当前浏览器中。模型请求及探测请求由浏览器直接发送到所配置的端点，Bun 服务器不参与。Provider 因此必须允许 Turnfold 来源通过 CORS；访问局域网端点时，浏览器还可能请求本地网络访问权限。
 
 Turnfold 内嵌来自 [Models.dev](https://models.dev/) 的 12 个精选模型元数据。完整 Models.dev 目录不会自动获取；用户可在 Provider 设置中明确点击下载或更新，数据随后保存在独立的浏览器 IndexedDB 中。下载的目录条目只会作为匹配 Provider 的模型模板，并且不包含任何凭据。
 

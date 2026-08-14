@@ -37,10 +37,8 @@ export type ProviderProfile = {
   updatedAt: string;
 };
 
-export type ProviderCatalogSource = "keyvault" | "omp" | "models.dev";
-
-export type ProviderPreset = Omit<ProviderProfile, "createdAt" | "updatedAt"> & {
-  catalogSources: ProviderCatalogSource[];
+export type CatalogProviderProfile = Omit<ProviderProfile, "createdAt" | "updatedAt"> & {
+  catalogSource: "models.dev";
 };
 
 export type ProviderSecret = {

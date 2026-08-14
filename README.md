@@ -19,9 +19,10 @@ Messages are immutable content-addressed objects. A conversation is a lightweigh
 - Local-first IndexedDB repository with offline rendering and an outbox.
 - Immutable messages, named conversation refs, branch navigation, and reflog history.
 - Multiple persistent drafts and recoverable partial assistant streams.
-- A credential-free Provider preset catalog derived from KeyVault and OMP, with every preset disabled until the user saves a local override.
+- Credential-free Provider connection profiles derived from the embedded Models.dev subset, all disabled by default.
 - An embedded twelve-model Models.dev subset, with an explicit browser-only action to download or update the complete catalog.
-- Browser-direct custom Provider profiles and local overrides; credentials never enter the preset catalog.
+- Browser-direct custom and embedded Provider profiles; credentials never enter the embedded catalog.
+- A two-path simple Provider setup by default: choose a catalog Provider and enter credentials, or supply only a URL and key for automatic detection; the previous full form remains available as advanced configuration.
 - Handwritten SSE clients for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Google Generative AI protocols.
 - Native archive plus Codex CLI, Claude Code, and OMP JSONL import/export.
 - Batch import from files, ZIP archives, or a read-only local directory.
@@ -38,7 +39,7 @@ Requirements: Docker with the Compose plugin, plus an AI endpoint that permits r
 docker compose up --build -d
 ```
 
-Open <http://localhost:3000>, then enable a preset by reviewing and saving its local override, or add a custom Provider. You can enter a model ID manually or refresh the model list.
+Open <http://localhost:3000>, then enable an embedded Provider by reviewing and saving its local connection profile, or add a custom Provider. You can enter a model ID manually or refresh the model list.
 
 The default Compose configuration uses `AUTH_MODE=single-user`. It is intended for localhost or a trusted private network. Do not expose this mode to the public internet.
 
@@ -77,7 +78,7 @@ The development server listens on port `3000` by default. Set `PORT` to override
 
 `forward-auth` accepts `X-Turnfold-Username` and `X-Turnfold-Sub`. Authentik's `X-Authentik-Username` and `X-Authentik-Uid` headers are also supported for compatibility. The reverse proxy must remove untrusted client-supplied identity headers before setting its own.
 
-The bundled preset catalog contains endpoint templates and model IDs, but no credentials, and presets are disabled by default. Enabling a preset creates a same-ID local override. When adding a model, Turnfold offers preset models that do not yet have a same-ID local or discovered override. Provider overrides, model overrides, custom profiles, discovered model lists, headers, and credentials are stored only in the current browser. Model requests go directly from that browser to the configured endpoint; the Bun server is not involved. The Provider must therefore allow the Turnfold origin through CORS. Browsers may also ask for local-network access before reaching a LAN endpoint.
+Embedded Providers and their models are derived entirely from the embedded Models.dev subset; Turnfold adds only the protocol, authentication mode, and API endpoint required by its browser runtime. They contain no credentials and are all disabled by default. Simple setup can select an embedded or downloaded catalog Provider and enter its credential, or accept only a URL and key, detect the protocol and models, and derive the identifier and name from the page title or domain. Advanced setup retains the full identifier, protocol, authentication, endpoint, default-model, and header controls. Provider profiles, model overrides, custom profiles, discovered model lists, headers, and credentials are stored only in the current browser. Model and detection requests go directly from that browser to the configured endpoint; the Bun server is not involved. The Provider must therefore allow the Turnfold origin through CORS. Browsers may also ask for local-network access before reaching a LAN endpoint.
 
 Turnfold embeds metadata for twelve curated models from [Models.dev](https://models.dev/). The complete Models.dev catalog is never fetched automatically: users can explicitly download or update it in Provider settings, where it is stored in a separate browser IndexedDB database. Downloaded catalog entries are offered as templates when adding a model to a matching Provider and never contain credentials.
 

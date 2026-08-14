@@ -251,7 +251,7 @@ export function normalizeDiscoveredModels(payload: unknown): ProviderModel[] {
     const id = rawId.replace(/^models\//, "");
     return [{
       id,
-      name: typeof model.displayName === "string" ? model.displayName : typeof model.name === "string" ? model.name.replace(/^models\//, "") : id,
+      name: typeof model.displayName === "string" ? model.displayName : typeof model.display_name === "string" ? model.display_name : typeof model.name === "string" ? model.name.replace(/^models\//, "") : id,
       ...(typeof model.owned_by === "string" ? {ownedBy: model.owned_by} : {}),
       ...(Number.isFinite(model.context_length) ? {contextWindow: Number(model.context_length)} : {}),
       source: "discovered" as const

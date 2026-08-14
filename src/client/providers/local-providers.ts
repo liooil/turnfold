@@ -1,5 +1,5 @@
 import type {ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret} from "../../shared/provider-types";
-import {withProviderPresetModels} from "./provider-presets";
+import {withEmbeddedProviderModels} from "./embedded-providers";
 
 export type LocalCredential = {
   id: string;
@@ -87,11 +87,11 @@ export function deleteLocalCredential(providerId: string, name = "default") {
 
 export function listLocalProviderProfiles() {
   return transaction<ProviderProfile[]>(providerStoreName, "readonly", (store) => store.getAll())
-    .then((profiles) => profiles.map(withProviderPresetModels));
+    .then((profiles) => profiles.map(withEmbeddedProviderModels));
 }
 
 export async function saveLocalProviderProfile(profile: ProviderProfile) {
-  const normalized = withProviderPresetModels(profile);
+  const normalized = withEmbeddedProviderModels(profile);
   await transaction<IDBValidKey>(providerStoreName, "readwrite", (store) => store.put(normalized));
   return normalized;
 }

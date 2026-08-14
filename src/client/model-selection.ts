@@ -64,8 +64,9 @@ export function createModelSelection(state: AppState, escapeHtml: (value: unknow
   function renderModelPicker() {
     const active = state.config?.providers.find((item) => item.id === state.providerId);
     if (!active || !state.config) return `<button class="model-picker-empty" type="button" data-action="open-provider-settings">${state.config?.providers.length ? "选择 Provider" : "配置 Provider"}</button>`;
-    const activeModelName = compactModelName(active.models.find((model) => model.id === state.model)?.name || state.model);
     const choices = quickModelChoices(availableModelChoices());
+    if (!choices.length) return '<button class="model-picker-empty" type="button" data-action="open-provider-settings">配置模型</button>';
+    const activeModelName = compactModelName(active.models.find((model) => model.id === state.model)?.name || state.model || "选择模型");
     return `<details class="model-picker"><summary aria-label="模型和 Effort"><span class="picker-label">${escapeHtml(activeModelName)}</span><span class="picker-icons"><i class="picker-chevron">${icons.down}</i></span></summary><div class="model-menu"><section class="quick-models"><div class="quick-config-heading"><strong>模型</strong><small>当前与最近使用</small></div><div class="quick-model-list">${choices.map(renderModelOption).join("")}</div></section>${renderEffortControl("quick-effort")}<button class="open-settings-button" type="button" data-action="open-settings">${icons.settings}<span><strong>打开全部设置</strong><small>模型、生成参数与 Provider</small></span></button></div></details>`;
   }
 
