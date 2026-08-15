@@ -68,7 +68,7 @@ export function createSessionTransferController(state: AppState, dependencies: D
           parentMessageId,
           role: node.role,
           parts: node.parts,
-          origin: node.origin || (node.role === "user" ? {type: "user", sourceMessageId: sourceId} : {type: "legacy"}),
+          origin: node.origin || (node.role === "user" ? {type: "user", sourceMessageId: sourceId} : {type: "imported"}),
           completion: node.completion || {status: "complete"},
           createdAt: node.createdAt,
           completedAt: node.completedAt,

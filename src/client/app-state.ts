@@ -8,7 +8,7 @@ import {embeddedModelsDevCatalog, embeddedModelsDevModelCount} from "./providers
 export type ChatProvider = ProviderProfile & {modelDiscoveryError?: string};
 export type ChatConfig = {providers: ChatProvider[]; profile: ChatProfile};
 export type ServerChatConfig = {identityKey: string; profile: ChatProfile; capabilities?: {sync?: boolean}};
-export type CachedChatBootstrap = {profile?: ChatProfile; config?: ChatConfig; frontendProviders?: unknown[]};
+export type CachedChatBootstrap = {profile?: ChatProfile; config?: ChatConfig};
 export type HashNavigationMode = "push" | "replace" | "none";
 
 export function createInitialAppState() {

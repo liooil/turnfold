@@ -7,7 +7,6 @@ import {
   profileCacheKey,
   setActiveOfflineProfileKey
 } from "./offline-database";
-import {queueConversationChange} from "./pending-changes";
 
 type CachedProfile<T = unknown> = {
   id: string;
@@ -20,7 +19,6 @@ type CachedProfile<T = unknown> = {
 type CachedConversationRef = Omit<Conversation, "messages"> & {
   cacheKey: string;
   profileId: string;
-  messages?: StoredChatMessage[];
 };
 
 type CachedMessage = StoredChatMessage & {cacheKey: string; profileId: string};
@@ -55,7 +53,7 @@ function normalizedCachedMessage(message: Partial<StoredChatMessage>, parentMess
     parentMessageId: message.parentMessageId === undefined ? parentMessageId : message.parentMessageId,
     role,
     parts: Array.isArray(message.parts) ? message.parts : [],
-    origin: message.origin || (role === "user" ? {type: "user"} : role === "system" ? {type: "system", source: "legacy-cache"} : {type: "legacy"}),
+    origin: message.origin || (role === "user" ? {type: "user"} : role === "system" ? {type: "system", source: "cache"} : {type: "imported"}),
     completion: message.completion || {status: "complete"},
     createdAt: message.createdAt || timestamp,
     completedAt: message.completedAt || timestamp,
@@ -155,7 +153,7 @@ export async function mergeOfflineProfiles(sourceProfileId: string, targetProfil
   if (!sourceProfileId || sourceProfileId === targetProfileId) return;
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
-    const storeNames = ["profiles", "conversations", "pending", "messages", "working", "reflog", "repositoryOutbox", "peerSyncStates"];
+    const storeNames = ["profiles", "conversations", "messages", "working", "reflog", "repositoryOutbox", "peerSyncStates"];
     const current = database.transaction(storeNames, "readwrite");
     const profiles = current.objectStore("profiles");
     const sourceProfileRequest = profiles.get(sourceProfileId);
@@ -267,25 +265,13 @@ export async function listCachedConversationRefs() {
   const records = await transaction<CachedConversationRef[]>("conversations", "readonly", (store) => store.index("profileId").getAll(profileId));
   const refs: Array<Omit<Conversation, "messages">> = [];
   for (const record of records) {
-    const {cacheKey: _cacheKey, profileId: _profileId, messages: legacyMessages, ...conversation} = record;
+    const {cacheKey: _cacheKey, profileId: _profileId, ...conversation} = record;
     const summary = normalizedConversationSummary(conversation as Partial<ConversationSummary> & {title?: unknown});
     if (!summary) continue;
-    const ref: Omit<Conversation, "messages"> = {
+    refs.push({
       ...summary,
       generationSettings: normalizeGenerationSettings(conversation.generationSettings)
-    };
-    if (!legacyMessages) {
-      refs.push(ref);
-      continue;
-    }
-    const normalized: Conversation = {
-      ...ref,
-      headMessageId: ref.headMessageId || legacyMessages.at(-1)?.id || null,
-      messages: legacyMessages.map((message, index) => normalizedCachedMessage(message, index ? legacyMessages[index - 1].id : null, ref.updatedAt))
-    };
-    await cacheConversation(normalized);
-    const {messages: _messages, ...migratedRef} = normalized;
-    refs.push(migratedRef);
+    });
   }
   return refs.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
@@ -354,19 +340,9 @@ export async function loadCachedConversation(id: string) {
   if (!profileId) return null;
   const record = await transaction<CachedConversationRef | undefined>("conversations", "readonly", (store) => store.get(profileCacheKey(profileId, id)));
   if (!record) return null;
-  const {cacheKey: _cacheKey, profileId: _profileId, messages: legacyMessages, ...conversation} = record;
+  const {cacheKey: _cacheKey, profileId: _profileId, ...conversation} = record;
   const normalizedSummary = normalizedConversationSummary(conversation as Partial<ConversationSummary> & {title?: unknown});
   if (!normalizedSummary) return null;
-  if (legacyMessages) {
-    const normalized: Conversation = {
-      ...conversation,
-      ...normalizedSummary,
-      headMessageId: normalizedSummary.headMessageId || legacyMessages.at(-1)?.id || null,
-      messages: legacyMessages.map((message, index) => normalizedCachedMessage(message, index ? legacyMessages[index - 1].id : null, conversation.updatedAt))
-    };
-    await cacheConversation(normalized);
-    return normalized;
-  }
   try {
     const messages = await messagePathFromCache(profileId, conversation.headMessageId);
     return {...conversation, ...normalizedSummary, messages};
@@ -386,12 +362,8 @@ export async function removeCachedConversation(id: string) {
 export async function deleteLocalConversation(id: string) {
   const profileId = activeProfileId();
   if (!profileId) return;
-  const conversation = await loadCachedConversation(id);
   await transaction<undefined>("conversations", "readwrite", (store) => store.delete(profileCacheKey(profileId, id)));
   await cacheConversationSummaries((await loadCachedConversationSummaries()).filter((item) => item.id !== id));
-  if (conversation?.upstreamHeadMessageId !== undefined && ((conversation.headVersion || 0) > 0 || (conversation.metadataVersion || 0) > 0)) {
-    await queueConversationChange({conversationId: id, method: "DELETE"});
-  }
   await transaction<undefined>("repositoryOutbox", "readwrite", (store) => store.delete(repositoryOutboxKey(profileId, id)));
 }
 

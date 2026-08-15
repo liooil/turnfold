@@ -13,7 +13,7 @@ import {
 
 const node = (id, parentMessageId, createdAt) => ({
   id, parentMessageId, role: id.startsWith("a") ? "assistant" : "user", parts: [],
-  origin: {type: "legacy"}, completion: {status: "complete"}, createdAt, completedAt: createdAt
+  origin: {type: "imported"}, completion: {status: "complete"}, createdAt, completedAt: createdAt
 });
 
 describe("message graph", () => {

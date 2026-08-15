@@ -6,7 +6,7 @@ const message = (id, parentMessageId, text) => ({
   parentMessageId,
   role: id.startsWith("a") ? "assistant" : "user",
   parts: [{type: "text", text}],
-  origin: {type: "legacy"},
+  origin: {type: "imported"},
   completion: {status: "complete"},
   createdAt: id,
   completedAt: id

@@ -7,11 +7,10 @@ import type {GenerationSettings} from "../shared/generation-settings";
 import {conversationRepository, peerSyncStateRepository, replicationRepository} from "./repository/repositories";
 import {HttpRepositoryPeer} from "./sync/http-repository-peer";
 import {SyncEngine} from "./sync/sync-engine";
-import {flushLegacyConversationChanges, saveLegacyConversation} from "./sync/legacy-conversation-sync";
 
-declare const __TURNFOLD_BASE_PATH__: string;
+declare const __TURNFOLD_BASE_PATH__: string | undefined;
 
-const chatBasePath = __TURNFOLD_BASE_PATH__;
+const chatBasePath = typeof __TURNFOLD_BASE_PATH__ !== "undefined" ? __TURNFOLD_BASE_PATH__ : "";
 const chatApi = (pathname: string) => `${chatBasePath}${pathname}`;
 const httpRepositoryPeer = new HttpRepositoryPeer(`server:${window.location.origin}${chatBasePath}`, chatApi);
 const syncEngine = new SyncEngine(replicationRepository, peerSyncStateRepository);
@@ -92,22 +91,10 @@ export async function commitConversationMessage(conversationId: string, input: M
 export function moveConversationHead(conversationId: string, headMessageId: string | null) {
   return conversationRepository.moveHead(conversationId, headMessageId);
 }
-
-// Compatibility for queued operations produced by an older client.
-export async function saveConversationHistory(id: string, providerId: string, model: string, messages: StoredChatMessage[]) {
-  return saveLegacyConversation(chatApi, id, providerId, model, messages);
-}
-
 export async function deleteConversationHistory(id: string) {
   await conversationRepository.remove(id);
 }
-
-export async function flushPendingConversationChanges() {
-  await flushLegacyConversationChanges(chatApi);
-}
-
 export async function synchronizeConversationRepository() {
-  await flushPendingConversationChanges();
   const result = await syncEngine.syncWith(httpRepositoryPeer);
   return {summaries: await conversationRepository.list(), ...result};
 }

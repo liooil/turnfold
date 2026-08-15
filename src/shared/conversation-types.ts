@@ -13,7 +13,7 @@ export type MessageOrigin =
   | {type: "manual"; clientId?: string; sourceMessageId?: string}
   | {type: "model"; providerId: string; model: string; attemptId: string}
   | {type: "system"; source: string}
-  | {type: "legacy"};
+  | {type: "imported"};
 
 export type MessageCompletion = {
   status: "complete" | "partial";

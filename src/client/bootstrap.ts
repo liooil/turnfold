@@ -6,10 +6,9 @@ import {
   synchronizeConversationRepository
 } from "./conversation-client";
 import {appUrl} from "./environment";
-import {listLocalCredentials, listLocalProviderProfiles, migrateLegacyProviderProfile, saveLocalProviderProfile} from "./providers/local-providers";
+import {listLocalCredentials, listLocalProviderProfiles} from "./providers/local-providers";
 import {modelsDevModelCount} from "./providers/models-dev-catalog";
 import {loadStoredModelsDevCatalog} from "./providers/models-dev-storage";
-import {validProviderUrl} from "./providers/provider-validation";
 import {updateConversationHash} from "./navigation";
 import {
   activateOfflineProfile,
@@ -36,34 +35,6 @@ type BootstrapDependencies = {
 export function createBootstrap(state: AppState, dependencies: BootstrapDependencies) {
   function cachedProfile(value: CachedChatBootstrap | undefined) {
     return value?.profile || value?.config?.profile;
-  }
-
-  function legacyProviderSources(...values: Array<CachedChatBootstrap | undefined>) {
-    return values.flatMap((value) => [
-      ...(value?.config?.providers || []),
-      ...(Array.isArray(value?.frontendProviders) ? value.frontendProviders : [])
-    ]);
-  }
-
-  async function migrateRelevantLegacyProviders(sources: unknown[]) {
-    const existing = await listLocalProviderProfiles();
-    const byId = new Map(existing.map((item) => [item.id, item]));
-    const relevantIds = new Set([
-      ...state.localCredentials.map((item) => item.providerId),
-      ...state.conversations.map((item) => item.providerId),
-      window.localStorage.getItem("turnfold-provider") || ""
-    ].filter(Boolean));
-    for (const source of sources) {
-      const migrated = migrateLegacyProviderProfile(source);
-      if (!migrated || !relevantIds.has(migrated.id) || byId.has(migrated.id)) continue;
-      const credential = state.localCredentials.find((item) => item.providerId === migrated.id);
-      const profile = credential?.legacyBaseUrl
-        ? {...migrated, baseUrl: validProviderUrl(credential.legacyBaseUrl, "Base URL")}
-        : migrated;
-      await saveLocalProviderProfile(profile);
-      byId.set(profile.id, profile);
-    }
-    return [...byId.values()];
   }
 
   async function restoreWorkspace(preferredConversationId = "") {
@@ -129,12 +100,11 @@ export function createBootstrap(state: AppState, dependencies: BootstrapDependen
     };
     state.lastFetchAt = stored?.lastFetchAt || await cachedLastFetchAt();
     state.conversations = await listConversationHistory();
-    state.config.providers = await migrateRelevantLegacyProviders(legacyProviderSources(stored?.config, previouslyActive?.config));
+    state.config.providers = await listLocalProviderProfiles();
     await cacheChatConfig(repositoryId, {profile: state.config.profile});
     await restoreWorkspace();
     // The full local message graph is profile-wide; load it once at startup
-    // (and after sync), not on every conversation switch. Loading after
-    // restoreWorkspace also picks up legacy records migrated on first access.
+    // (and after sync), not on every conversation switch.
     state.messageGraph = await listCachedMessages();
     state.loading = false;
     state.offline = !navigator.onLine;

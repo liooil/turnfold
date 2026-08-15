@@ -23,7 +23,7 @@ export function applyImportTitleTemplate(template: string, context: ImportTitleC
 }
 
 export function importFileStem(filename: string) {
-  return filename.replace(/\.(?:turnfold|xiteng-chat)\.json$/i, "").replace(/\.(?:jsonl|json)$/i, "");
+  return filename.replace(/\.turnfold\.json$/i, "").replace(/\.(?:jsonl|json)$/i, "");
 }
 
 export function importSourceFolder(source: string) {

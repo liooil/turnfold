@@ -63,6 +63,8 @@ docker compose config
 
 The source dependency direction is `client -> shared <- server`. See [docs/architecture.md](docs/architecture.md) for the module and compatibility boundaries.
 
+`bun run dev` starts Bun's fullstack dev server (`Bun.serve` with `development: true`). It bundles `src/index.html` on demand, enables hot reloading for frontend changes, and prepares public/MathJax assets in `dist/` on startup.
+
 The development server listens on port `3000` by default. Set `PORT` to override it.
 
 ## Configuration
@@ -100,7 +102,6 @@ Then open <http://localhost:3000/turnfold/>.
 - Browser data, Provider profiles, and credentials live in IndexedDB and remain usable without the server.
 - Signed-in/single-user refs and immutable objects synchronize to SQLite.
 - Full backups use `*.turnfold.json` with `type: "turnfold-archive"` and `version: 1`.
-- Legacy `*.xiteng-chat.json` archives remain importable.
 - Native backups include message objects, conversation refs, and working drafts.
 
 Keep backups before upgrading an early release.

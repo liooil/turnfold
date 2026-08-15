@@ -59,7 +59,7 @@ describe("embedded Provider profiles", () => {
     });
   });
 
-  test("replaces legacy preset models while preserving local overrides", () => {
+  test("replaces old preset models while preserving local overrides", () => {
     const template = getEmbeddedProviderProfile("openai");
     const timestamp = "2026-08-14T00:00:00.000Z";
     const hydrated = withEmbeddedProviderModels({
@@ -67,7 +67,7 @@ describe("embedded Provider profiles", () => {
       createdAt: timestamp,
       updatedAt: timestamp,
       models: [
-        {id: "gpt-5.4", name: "Legacy preset", source: "preset"},
+        {id: "gpt-5.4", name: "Old preset", source: "preset"},
         {id: "gpt-5.6", name: "Local GPT", source: "manual"}
       ]
     });

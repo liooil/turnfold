@@ -1,4 +1,3 @@
-import {migrateLegacyPreferences} from "./preferences";
 import {createInitialAppState} from "./app-state";
 import {conversationIdFromHash} from "../shared/conversation-hash";
 import {defaultGenerationSettings} from "../shared/generation-settings";
@@ -33,8 +32,6 @@ import {isViewportAtBottom, scrollBottom} from "./viewport";
 const rootElement = document.querySelector<HTMLDivElement>("#app");
 if (!rootElement) throw new Error("Application root is missing");
 const root: HTMLDivElement = rootElement;
-
-migrateLegacyPreferences();
 
 const state = createInitialAppState();
 

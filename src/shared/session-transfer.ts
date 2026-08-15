@@ -110,13 +110,13 @@ function transferNode(sourceId: string, parentSourceId: string | null, role: Sto
     createdAt: timestamp,
     completedAt: timestamp,
     completion: {status: "complete"},
-    origin: role === "user" ? {type: "user"} : role === "system" ? {type: "system", source: "session-import"} : {type: "legacy"},
+    origin: role === "user" ? {type: "user"} : role === "system" ? {type: "system", source: "session-import"} : {type: "imported"},
     ...extra
   };
 }
 
 function parseTurnfold(value: JsonRecord): TransferDocument {
-  if (!["turnfold-archive", "xiteng-chat-archive"].includes(String(value.type)) || value.version !== 1 || !Array.isArray(value.conversations) || !Array.isArray(value.objects)) {
+  if (value.type !== "turnfold-archive" || value.version !== 1 || !Array.isArray(value.conversations) || !Array.isArray(value.objects)) {
     throw new Error("不支持的 Turnfold 备份版本");
   }
   const nodes: TransferNode[] = [];
@@ -127,7 +127,7 @@ function parseTurnfold(value: JsonRecord): TransferDocument {
       parentSourceId: typeof candidate.parentMessageId === "string" ? candidate.parentMessageId : null,
       role: candidate.role as StoredChatMessage["role"],
       parts: candidate.parts as StoredChatMessage["parts"],
-      origin: isRecord(candidate.origin) ? candidate.origin as StoredChatMessage["origin"] : {type: "legacy"},
+      origin: isRecord(candidate.origin) ? candidate.origin as StoredChatMessage["origin"] : {type: "imported"},
       completion: isRecord(candidate.completion) ? candidate.completion as StoredChatMessage["completion"] : {status: "complete"},
       createdAt: isoTimestamp(candidate.createdAt),
       completedAt: isoTimestamp(candidate.completedAt, isoTimestamp(candidate.createdAt)),
@@ -319,7 +319,7 @@ export function detectSessionTransferFormat(text: string, filename = ""): Sessio
     try {
       const firstLine = JSON.parse(trimmed.split(/\r?\n/, 1)[0]) as unknown;
       if (isRecord(firstLine)) {
-        if (firstLine.type === "turnfold-archive" || firstLine.type === "xiteng-chat-archive") return "turnfold";
+        if (firstLine.type === "turnfold-archive") return "turnfold";
         if (firstLine.type === "session_meta") return "codex";
         if (firstLine.type === "session" || firstLine.type === "title") return "omp";
         if (typeof firstLine.sessionId === "string" || typeof firstLine.uuid === "string" || ["user", "assistant", "custom-title", "ai-title"].includes(String(firstLine.type))) return "claude";
@@ -327,7 +327,7 @@ export function detectSessionTransferFormat(text: string, filename = ""): Sessio
     } catch {}
   }
   const lower = filename.toLowerCase();
-  if (lower.endsWith(".turnfold.json") || lower.endsWith(".xiteng-chat.json")) return "turnfold";
+  if (lower.endsWith(".turnfold.json")) return "turnfold";
   throw new Error("无法识别会话格式；请选择 Turnfold JSON 或 Codex / Claude Code / OMP JSONL");
 }
 

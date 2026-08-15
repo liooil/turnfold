@@ -24,7 +24,7 @@ describe("import title templates", () => {
   });
 
   test("extracts source file and folder labels", () => {
-    expect(importFileStem("backup.xiteng-chat.json")).toBe("backup");
+    expect(importFileStem("backup.turnfold.json")).toBe("backup");
     expect(importFileStem("rollout.jsonl")).toBe("rollout");
     expect(importSourceFolder("sessions.zip / nested / rollout.jsonl")).toBe("nested");
   });

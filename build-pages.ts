@@ -1,5 +1,6 @@
 import {cpSync, mkdirSync, readdirSync, rmSync} from "node:fs";
 import {join} from "node:path";
+import {buildFrontend} from "./build";
 
 const sourceDirectory = "docs";
 const outputDirectory = "pages-dist";
@@ -12,8 +13,8 @@ for (const entry of readdirSync(sourceDirectory, {withFileTypes: true})) {
   cpSync(join(sourceDirectory, entry.name), join(outputDirectory, entry.name), {recursive: true});
 }
 
-process.env.OUTPUT_DIR = join(outputDirectory, "app");
-process.env.BASE_PATH = "/turnfold/app";
-process.env.HOME_URL = "/turnfold/";
-
-await import("./build");
+await buildFrontend({
+  outputDirectory: join(outputDirectory, "app"),
+  basePath: "/turnfold/app",
+  homeUrl: "/turnfold/"
+});

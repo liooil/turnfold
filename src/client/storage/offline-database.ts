@@ -1,7 +1,6 @@
-// Keep the original database identifiers so existing installations upgrade without losing local history.
-const databaseName = "xiteng-chat-offline";
-const databaseVersion = 4;
-const activeProfileKey = "xiteng-chat-offline-profile";
+const databaseName = "turnfold-offline";
+const databaseVersion = 5;
+const activeProfileKey = "turnfold-offline-profile";
 
 export function openOfflineDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -13,10 +12,7 @@ export function openOfflineDatabase() {
         const conversations = database.createObjectStore("conversations", {keyPath: "cacheKey"});
         conversations.createIndex("profileId", "profileId");
       }
-      if (!database.objectStoreNames.contains("pending")) {
-        const pending = database.createObjectStore("pending", {keyPath: "cacheKey"});
-        pending.createIndex("profileId", "profileId");
-      }
+      if (database.objectStoreNames.contains("pending")) database.deleteObjectStore("pending");
       if (!database.objectStoreNames.contains("messages")) {
         const messages = database.createObjectStore("messages", {keyPath: "cacheKey"});
         messages.createIndex("profileId", "profileId");

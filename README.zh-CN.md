@@ -61,6 +61,8 @@ docker compose config
 
 源码依赖方向固定为 `client -> shared <- server`。模块职责与兼容边界见 [docs/architecture.md](docs/architecture.md)。
 
+`bun run dev` 会启动 Bun 的 fullstack 开发服务器（`Bun.serve` 且 `development: true`）。它会在启动时把 public 和 MathJax 资源准备到 `dist/`，按需打包 `src/index.html`，并为前端改动启用热更新。
+
 开发服务器默认监听 `3000` 端口，可通过 `PORT` 修改。
 
 ## 配置
@@ -98,7 +100,6 @@ docker run --rm -p 3000:3000 -e BASE_PATH=/turnfold -v turnfold-data:/data turnf
 - 浏览器数据、Provider 配置和凭据保存在 IndexedDB 中，无需服务器也可以继续使用。
 - 已登录用户或单用户模式下的引用和不可变对象会同步到 SQLite。
 - 完整备份使用 `*.turnfold.json`，其中 `type` 为 `"turnfold-archive"`、`version` 为 `1`。
-- 旧的 `*.xiteng-chat.json` 归档仍然可以导入。
 - 原生备份包括消息对象、会话引用和工作草稿。
 
 升级早期版本前请保留备份。

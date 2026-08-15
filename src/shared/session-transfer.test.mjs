@@ -79,15 +79,4 @@ describe("session transfer formats", () => {
     expect(parsed.nodes).toHaveLength(1);
   });
 
-  test("imports legacy Xiteng archives", () => {
-    const text = JSON.stringify({
-      type: "xiteng-chat-archive",
-      version: 1,
-      conversations: [],
-      objects: [],
-      workingItems: []
-    });
-    expect(detectSessionTransferFormat(text, "legacy.xiteng-chat.json")).toBe("turnfold");
-    expect(parseSessionTransfer(text, "legacy.xiteng-chat.json").format).toBe("turnfold");
-  });
 });
