@@ -83,10 +83,72 @@ function normalizedConversationSummary(summary: Partial<ConversationSummary> & {
 
 export function activateOfflineProfile(profileId: string) {
   setActiveOfflineProfileKey(profileId);
+  resetSessionMessageCache();
 }
 
 export function activeOfflineProfileId() {
   return activeProfileId();
+}
+
+// ---------------------------------------------------------------------------
+// Session message cache.
+//
+// Reading every message from IndexedDB per operation (one open + one
+// transaction per record in the old code) made conversation switches take
+// seconds on large graphs. Keep the full message set in memory for the
+// session: load once, update it on every local write, and reload only when
+// the profile record's updatedAt changes (e.g. another tab wrote).
+// ---------------------------------------------------------------------------
+
+let sessionMessages: Map<string, StoredChatMessage> | null = null;
+let sessionVersion = "";
+
+async function cachedProfileVersion() {
+  const profileId = activeProfileId();
+  if (!profileId) return "";
+  const profile = await transaction<CachedProfile | undefined>("profiles", "readonly", (store) => store.get(profileId));
+  return profile?.updatedAt || "";
+}
+
+async function rawListCachedMessages(): Promise<CachedMessage[]> {
+  const profileId = activeProfileId();
+  if (!profileId) return [];
+  const database = await openDatabase();
+  return new Promise<CachedMessage[]>((resolve, reject) => {
+    const current = database.transaction("messages", "readonly");
+    const request = current.objectStore("messages").index("profileId").getAll(profileId);
+    request.onsuccess = () => resolve(request.result as CachedMessage[]);
+    request.onerror = () => reject(request.error || new Error("Unable to list local message objects"));
+    current.oncomplete = () => database.close();
+  });
+}
+
+async function ensureSessionMessages() {
+  const version = await cachedProfileVersion();
+  if (sessionMessages && sessionVersion === version) return sessionMessages;
+  const records = await rawListCachedMessages();
+  const next = new Map<string, StoredChatMessage>();
+  for (const record of records) {
+    const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
+    next.set(message.id, message);
+  }
+  sessionMessages = next;
+  sessionVersion = version;
+  return sessionMessages;
+}
+
+export function rememberCachedMessage(message: StoredChatMessage) {
+  sessionMessages?.set(message.id, message);
+}
+
+function rememberCachedMessages(messages: StoredChatMessage[]) {
+  if (!sessionMessages) return;
+  for (const message of messages) sessionMessages.set(message.id, message);
+}
+
+export function resetSessionMessageCache() {
+  sessionMessages = null;
+  sessionVersion = "";
 }
 
 export async function mergeOfflineProfiles(sourceProfileId: string, targetProfileId: string) {
@@ -231,12 +293,23 @@ export async function listCachedConversationRefs() {
 export async function cacheConversation(conversation: Conversation) {
   const profileId = activeProfileId();
   if (!profileId) return;
+  const records: CachedMessage[] = [];
   let parentMessageId: string | null = null;
   for (const candidate of conversation.messages) {
     const message = normalizedCachedMessage(candidate, parentMessageId, conversation.updatedAt);
-    const record: CachedMessage = {...message, cacheKey: profileCacheKey(profileId, message.id), profileId};
-    await transaction<IDBValidKey>("messages", "readwrite", (store) => store.put(record));
+    records.push({...message, cacheKey: profileCacheKey(profileId, message.id), profileId});
     parentMessageId = message.id;
+  }
+  if (records.length) {
+    const database = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const current = database.transaction("messages", "readwrite");
+      const store = current.objectStore("messages");
+      for (const record of records) store.put(record);
+      current.oncomplete = () => { database.close(); resolve(); };
+      current.onerror = () => { database.close(); reject(current.error || new Error("Unable to cache conversation messages")); };
+      current.onabort = () => database.close();
+    });
   }
   const {messages: _messages, ...summary} = conversation;
   const ref: CachedConversationRef = {
@@ -254,11 +327,26 @@ export async function cacheConversation(conversation: Conversation) {
   ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
 }
 
-async function loadCachedMessage(profileId: string, id: string) {
-  const record = await transaction<CachedMessage | undefined>("messages", "readonly", (store) => store.get(profileCacheKey(profileId, id)));
-  if (!record) return null;
-  const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
-  return message;
+function loadCachedMessages(profileId: string, ids: string[]) {
+  const database = openDatabase();
+  return database.then((current) => new Promise<Map<string, StoredChatMessage>>((resolve, reject) => {
+    const active = current.transaction("messages", "readonly");
+    const store = active.objectStore("messages");
+    const results = new Map<string, StoredChatMessage>();
+    for (const id of ids) {
+      const request = store.get(profileCacheKey(profileId, id));
+      request.onsuccess = () => {
+        const record = request.result as CachedMessage | undefined;
+        if (record) {
+          const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
+          results.set(id, message);
+        }
+      };
+    }
+    active.oncomplete = () => { current.close(); resolve(results); };
+    active.onerror = () => { current.close(); reject(active.error || new Error("Unable to read local message objects")); };
+    active.onabort = () => current.close();
+  }));
 }
 
 export async function loadCachedConversation(id: string) {
@@ -279,18 +367,12 @@ export async function loadCachedConversation(id: string) {
     await cacheConversation(normalized);
     return normalized;
   }
-  const reversed: StoredChatMessage[] = [];
-  const seen = new Set<string>();
-  let messageId = conversation.headMessageId;
-  while (messageId) {
-    if (seen.has(messageId)) return null;
-    seen.add(messageId);
-    const message = await loadCachedMessage(profileId, messageId);
-    if (!message) return null;
-    reversed.push(message);
-    messageId = message.parentMessageId;
+  try {
+    const messages = await messagePathFromCache(profileId, conversation.headMessageId);
+    return {...conversation, ...normalizedSummary, messages};
+  } catch {
+    return null;
   }
-  return {...conversation, ...normalizedSummary, messages: reversed.reverse()};
 }
 
 export async function removeCachedConversation(id: string) {
@@ -600,8 +682,9 @@ export async function repositoryPushPayload() {
   for (const pending of outbox) {
     const conversation = await loadCachedConversation(pending.conversationId);
     if (!conversation) continue;
+    const objectsById = await loadCachedMessages(profileId, pending.objectIds);
     for (const id of pending.objectIds) {
-      const object = await loadCachedMessage(profileId, id);
+      const object = objectsById.get(id);
       if (object) objects.push(object);
     }
     refs.push({
@@ -624,8 +707,18 @@ export async function repositoryPushPayload() {
 export async function applyRepositoryFetch(repository: RepositoryFetch) {
   const profileId = activeProfileId();
   if (!profileId) return;
-  for (const object of repository.objects) {
-    await transaction<IDBValidKey>("messages", "readwrite", (store) => store.put({...object, cacheKey: profileCacheKey(profileId, object.id), profileId}));
+  if (repository.objects.length) {
+    const database = await openDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const current = database.transaction("messages", "readwrite");
+      const store = current.objectStore("messages");
+      for (const object of repository.objects) {
+        store.put({...object, cacheKey: profileCacheKey(profileId, object.id), profileId});
+      }
+      current.oncomplete = () => { database.close(); resolve(); };
+      current.onerror = () => { database.close(); reject(current.error || new Error("Unable to apply repository fetch")); };
+      current.onabort = () => database.close();
+    });
   }
   for (const remote of repository.refs) {
     const local = await loadCachedConversation(remote.id);
@@ -660,18 +753,46 @@ export async function applyRepositoryFetch(repository: RepositoryFetch) {
 }
 
 async function messagePathFromCache(profileId: string, headMessageId: string | null) {
-  const reversed: StoredChatMessage[] = [];
-  const seen = new Set<string>();
-  let id = headMessageId;
-  while (id) {
-    if (seen.has(id)) throw new Error("Local object history is cyclic");
-    seen.add(id);
-    const object = await loadCachedMessage(profileId, id);
-    if (!object) throw new Error(`Local object ${id} is unavailable`);
-    reversed.push(object);
-    id = object.parentMessageId;
-  }
-  return reversed.reverse();
+  if (!headMessageId) return [];
+  const database = await openDatabase();
+  return new Promise<StoredChatMessage[]>((resolve, reject) => {
+    // Walk the parent chain with chained gets inside ONE transaction: each get
+    // is issued from the previous get's onsuccess, which keeps the transaction
+    // alive. The old per-message open+transaction approach took seconds on
+    // long conversations.
+    const current = database.transaction("messages", "readonly");
+    const store = current.objectStore("messages");
+    const reversed: StoredChatMessage[] = [];
+    const seen = new Set<string>();
+    const fail = (error: unknown) => reject(error instanceof Error ? error : new Error("Unable to read local object history"));
+    const next = (messageId: string | null) => {
+      if (!messageId) {
+        resolve(reversed.reverse());
+        return;
+      }
+      if (seen.has(messageId)) {
+        fail(new Error("Local object history is cyclic"));
+        return;
+      }
+      seen.add(messageId);
+      const request = store.get(profileCacheKey(profileId, messageId));
+      request.onsuccess = () => {
+        const record = request.result as CachedMessage | undefined;
+        if (!record) {
+          fail(new Error(`Local object ${messageId} is unavailable`));
+          return;
+        }
+        const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
+        reversed.push(message);
+        next(message.parentMessageId);
+      };
+      request.onerror = () => fail(request.error);
+    };
+    next(headMessageId);
+    current.oncomplete = () => database.close();
+    current.onerror = () => { database.close(); fail(current.error); };
+    current.onabort = () => database.close();
+  });
 }
 
 export async function applyRepositoryPushResults(results: Array<{conversationId: string; status: "ok" | "conflict"; ref: ConversationRefState | null}>) {

@@ -60,6 +60,7 @@ export function createInitialAppState() {
     providerSetupKey: "",
     providerSetupBusy: false,
     providerSetupError: "",
+    providerSetupDetected: null as Omit<ProviderProfile, "createdAt" | "updatedAt"> | null,
     providerSetupController: null as AbortController | null,
     providerModelEditorOpen: false,
     providerModelProviderId: "",

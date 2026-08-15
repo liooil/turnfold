@@ -1,5 +1,5 @@
 import type {ProviderProfile, ProviderProtocol, ProviderSecret} from "../../shared/provider-types";
-import {discoverProviderModels} from "./provider-runtime";
+import {discoverProviderModels, smokeTestProviderEndpoint} from "./provider-runtime";
 
 type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type ProviderDraft = Omit<ProviderProfile, "createdAt" | "updatedAt">;
@@ -38,7 +38,7 @@ function protocolCandidates(url: URL): ProviderProtocol[] {
       : hint.includes("openai.com")
         ? "openai-responses"
         : "openai-chat";
-  if (first === "openai-responses") return [first];
+  if (first === "openai-responses") return ["openai-responses", "openai-chat"];
   if (first === "anthropic" || first === "google") return [first, "openai-chat"];
   return ["openai-chat", "anthropic", "google"];
 }
@@ -101,6 +101,13 @@ function uniqueProviderId(baseId: string, usedIds: Iterable<string>) {
   return `${baseId}-${suffix}`;
 }
 
+function failureReason(error: unknown, apiKey: string) {
+  const message = error instanceof Error && error.message ? error.message : String(error);
+  if (/Provider HTTP 401/.test(message)) return apiKey ? `${message}（API Key 被拒绝）` : `${message}（端点要求认证，请填写 API Key）`;
+  if (/Provider HTTP 403/.test(message)) return `${message}（凭据被拒绝）`;
+  return message;
+}
+
 export async function autoDetectProvider(
   urlValue: string,
   apiKey: string,
@@ -114,7 +121,7 @@ export async function autoDetectProvider(
     ...init,
     signal: AbortSignal.any([...(signal ? [signal] : []), ...(init.signal ? [init.signal] : []), AbortSignal.timeout(5000)])
   });
-  let lastError: unknown;
+  const failures: Array<{protocol: ProviderProtocol; baseUrl: string; reason: string}> = [];
   for (const baseUrl of baseUrlCandidates(url)) {
     for (const protocol of protocolCandidates(url)) {
       const candidate: ProviderDraft = {
@@ -129,7 +136,10 @@ export async function autoDetectProvider(
         defaultModel: ""
       };
       try {
-        const models = await discoverProviderModels({...candidate, createdAt: "", updatedAt: ""}, secret, probeFetch);
+        const models = await discoverProviderModels({...candidate, createdAt: "", updatedAt: ""}, secret, probeFetch, {strictShape: true});
+        const smoke = await smokeTestProviderEndpoint(candidate, secret, models, probeFetch);
+        if (smoke === "auth-denied") throw new Error(apiKey ? "对话端点拒绝了 API Key（401/403）" : "对话端点要求认证（401/403），请填写 API Key");
+        if (smoke === "missing-route") throw new Error("模型列表存在，但该协议的对话端点不存在");
         const domain = domainIdentity(url);
         const title = await websiteTitle(url, providerFetch, signal);
         return {
@@ -140,10 +150,10 @@ export async function autoDetectProvider(
           defaultModel: models[0]?.id || ""
         };
       } catch (error) {
-        lastError = error;
+        failures.push({protocol, baseUrl, reason: failureReason(error, apiKey)});
       }
     }
   }
-  const detail = lastError instanceof Error ? `：${lastError.message}` : "";
-  throw new Error(`未能从该 URL 探测到兼容的模型目录${detail}`);
+  const detail = failures.map((failure) => `${failure.baseUrl}（${failure.protocol}）：${failure.reason}`).join("；");
+  throw new Error(`未能从该 URL 探测到兼容的模型目录${detail ? `：${detail}` : ""}`);
 }

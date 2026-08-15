@@ -44,6 +44,7 @@ export function createProviderController(state: AppState, dependencies: Dependen
     state.providerSetupKey = "";
     state.providerSetupBusy = false;
     state.providerSetupError = "";
+    state.providerSetupDetected = null;
     state.providerSetupController = null;
   }
 
@@ -169,7 +170,7 @@ export function createProviderController(state: AppState, dependencies: Dependen
     render();
   }
 
-  async function saveDetectedProviderForm(form: HTMLFormElement) {
+  async function detectProviderForm(form: HTMLFormElement) {
     if (!state.config || state.providerSetupBusy) return;
     state.providerSetupUrl = formValue(form, "provider-url");
     state.providerSetupKey = formValue(form, "provider-api-key");
@@ -178,18 +179,36 @@ export function createProviderController(state: AppState, dependencies: Dependen
     state.providerSetupController = controller;
     state.providerSetupBusy = true;
     state.providerSetupError = "";
+    state.providerSetupDetected = null;
     render();
     try {
       const detected = await autoDetectProvider(state.providerSetupUrl, state.providerSetupKey, state.config.providers.map((item) => item.id), fetch, controller.signal);
       if (state.providerSetupController !== controller) return;
       state.providerSetupController = null;
-      const timestamp = messageNow();
-      await persistProviderProfile({...detected, createdAt: timestamp, updatedAt: timestamp}, state.providerSetupKey);
+      state.providerSetupBusy = false;
+      state.providerSetupDetected = detected;
+      render();
     } catch (error) {
       if (state.providerSetupController !== controller) return;
       state.providerSetupController = null;
       state.providerSetupBusy = false;
       state.providerSetupError = error instanceof Error ? error.message : "Provider 自动探测失败";
+      render();
+    }
+  }
+
+  async function addDetectedProviderForm() {
+    const detected = state.providerSetupDetected;
+    if (!state.config || !detected || state.providerSetupBusy) return;
+    state.providerSetupBusy = true;
+    state.providerSetupError = "";
+    render();
+    try {
+      const timestamp = messageNow();
+      await persistProviderProfile({...detected, createdAt: timestamp, updatedAt: timestamp}, state.providerSetupKey);
+    } catch (error) {
+      state.providerSetupBusy = false;
+      state.providerSetupError = error instanceof Error ? error.message : "添加 Provider 失败";
       render();
     }
   }
@@ -302,7 +321,7 @@ export function createProviderController(state: AppState, dependencies: Dependen
 
   function handleSubmit(form: HTMLFormElement) {
     if (form.matches("[data-provider-catalog-form]")) void saveCatalogProviderForm(form).catch(dependencies.reportError);
-    else if (form.matches("[data-provider-detect-form]")) void saveDetectedProviderForm(form);
+    else if (form.matches("[data-provider-detect-form]")) void detectProviderForm(form);
     else if (form.matches("[data-provider-credential-form]")) void saveProviderCredentialForm(form).catch(dependencies.reportError);
     else if (form.matches("[data-provider-model-form]")) void saveProviderModelForm(form).catch(dependencies.reportError);
     else if (form.matches("[data-provider-form]")) void saveProviderForm(form).catch(dependencies.reportError);
@@ -318,10 +337,14 @@ export function createProviderController(state: AppState, dependencies: Dependen
     }
     if (target instanceof HTMLInputElement && target.dataset.action === "provider-setup-url") {
       state.providerSetupUrl = target.value;
+      state.providerSetupDetected = null;
+      render();
       return true;
     }
     if (target instanceof HTMLInputElement && target.dataset.action === "provider-setup-key") {
       state.providerSetupKey = target.value;
+      state.providerSetupDetected = null;
+      render();
       return true;
     }
     return false;
@@ -335,7 +358,8 @@ export function createProviderController(state: AppState, dependencies: Dependen
     else if (action === "cancel-provider-edit") { closeProviderEditor(); render(); }
     else if (action === "provider-simple-mode") { state.providerEditorMode = "simple"; state.providerSetupError = ""; render(); }
     else if (action === "provider-advanced-mode") { state.providerEditorMode = "advanced"; state.providerSetupError = ""; render(); }
-    else if (action === "provider-setup-kind" && (button.dataset.kind === "catalog" || button.dataset.kind === "detect")) { state.providerSetupKind = button.dataset.kind; state.providerSetupError = ""; render(); }
+    else if (action === "provider-setup-kind" && (button.dataset.kind === "catalog" || button.dataset.kind === "detect")) { state.providerSetupKind = button.dataset.kind; state.providerSetupError = ""; state.providerSetupDetected = null; render(); }
+    else if (action === "add-detected-provider") void addDetectedProviderForm().catch(dependencies.reportError);
     else if (action === "add-provider-model" && button.dataset.provider) openProviderModelEditor(button.dataset.provider);
     else if (action === "select-provider-model-preset" && button.dataset.model) { state.providerModelPresetId = button.dataset.model; render(); }
     else if (action === "cancel-provider-model-edit") { closeProviderModelEditor(); render(); }
@@ -369,7 +393,8 @@ export function createProviderController(state: AppState, dependencies: Dependen
     removeProvider,
     resetModelsDevCatalog,
     saveCatalogProviderForm,
-    saveDetectedProviderForm,
+    detectProviderForm,
+    addDetectedProviderForm,
     saveProviderCredentialForm,
     saveProviderForm,
     saveProviderModelForm,

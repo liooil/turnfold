@@ -71,6 +71,7 @@
 .provider-setup-summary strong { font-size: 11px; }
 .provider-setup-summary small { overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .provider-setup-summary em { flex: 0 0 auto; color: var(--muted); font-size: 9px; font-style: normal; }
+.provider-detected-summary { border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: color-mix(in srgb, var(--soft) 55%, var(--panel)); }
 .provider-setup-note, .provider-setup-error { margin: 0; border-radius: 9px; padding: 9px 10px; background: var(--soft); color: var(--muted); font-size: 9px; line-height: 1.5; }
 .provider-setup-error { background: color-mix(in srgb, var(--danger) 9%, var(--panel)); color: var(--danger); }
 .provider-simple-editor button:disabled { cursor: wait; opacity: .58; }
@@ -268,6 +269,9 @@
 .welcome h1 { margin: 22px 0 8px; font-size: clamp(30px, 5vw, 46px); line-height: 1.08; letter-spacing: -.045em; }
 .welcome p { max-width: 560px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.7; }
 .message { width: min(760px, 100%); scroll-margin-block: 88px 180px; margin: 0 auto; padding: 14px 0; }
+/* Long conversations: let the browser skip style/layout for off-screen messages.
+   Math-bearing messages are excluded so MathJax can measure real geometry. */
+.message:not(:has(.math-fragment)) { content-visibility: auto; contain-intrinsic-size: auto 160px; }
 .user-message { display: grid; justify-items: end; }
 .user-message-actions { display: flex; height: 30px; align-items: center; gap: 3px; margin: 2px 4px -8px 0; color: var(--muted); }
 .message-content { overflow-wrap: anywhere; font-size: 15px; line-height: 1.72; }

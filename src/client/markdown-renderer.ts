@@ -26,6 +26,11 @@ export const finishingMarkdownMessages = new Set<string>();
 export const markdownRenderMetrics = {lexMs: 0, parseMs: 0, blocksParsed: 0, blocksReused: 0, domBlocksUpdated: 0, mathTypesets: 0};
 (window as typeof window & {__turnfoldRenderMetrics?: typeof markdownRenderMetrics}).__turnfoldRenderMetrics = markdownRenderMetrics;
 
+// Completed messages that never went through the streaming cache (imported or
+// rendered after a page reload) were re-parsed and re-sanitized on every render.
+// Cache their single-document render keyed by message id + source identity.
+const completedMarkdownCache = new Map<string, {source: string; block: RenderedMarkdownBlock}>();
+
 export function createMarkdownRenderer(options: {
   root: HTMLElement;
   escapeHtml: (value: unknown) => string;
@@ -47,6 +52,17 @@ export function createMarkdownRenderer(options: {
     return `${value.length}-${(hash >>> 0).toString(36)}`;
   }
 
+  // renderMarkdownContainer hashes the full message text on every render; the
+  // result only changes when the text changes, so memoize per message id.
+  const containerRenderKeyCache = new Map<string, {value: string; key: string}>();
+  function containerRenderKey(value: string, messageId: string) {
+    const cached = containerRenderKeyCache.get(messageId);
+    if (cached && cached.value === value) return cached.key;
+    const key = markdownRenderKey(value);
+    containerRenderKeyCache.set(messageId, {value, key});
+    return key;
+  }
+
   function renderMarkdownBlock(source: string, messageId: string, index: number, type: string, stable: boolean): RenderedMarkdownBlock {
     const startedAt = performance.now();
     const rendered = markdown(source);
@@ -56,7 +72,13 @@ export function createMarkdownRenderer(options: {
   }
 
   function markdownBlocks(value: string, messageId: string, complete: boolean) {
-    if (complete && !streamingMarkdownCaches.has(messageId)) return [renderMarkdownBlock(value, messageId, 0, "document", true)];
+    if (complete && !streamingMarkdownCaches.has(messageId)) {
+      const cached = completedMarkdownCache.get(messageId);
+      if (cached && cached.source === value) return [cached.block];
+      const block = renderMarkdownBlock(value, messageId, 0, "document", true);
+      completedMarkdownCache.set(messageId, {source: value, block});
+      return [block];
+    }
     const result = streamingMarkdownCaches.render(
       messageId,
       value,
@@ -74,7 +96,7 @@ export function createMarkdownRenderer(options: {
 
   function renderMarkdownContainer(value: string, messageId: string, complete: boolean) {
     const blocks = markdownBlocks(value, messageId, complete);
-    return `<div class="aui-md" data-render-key="${markdownRenderKey(value)}">${blocks.map(markdownBlockMarkup).join("")}</div>`;
+    return `<div class="aui-md" data-render-key="${containerRenderKey(value, messageId)}">${blocks.map(markdownBlockMarkup).join("")}</div>`;
   }
 
   function mathJaxRuntime() {

@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {createProviderRequest, inferredDiscoveryUrl, normalizeDiscoveredModels, parseProviderStream, providerHeaders} from "./provider-runtime.ts";
+import {createProviderRequest, discoverProviderModels, inferredDiscoveryUrl, normalizeDiscoveredModels, parseProviderStream, protocolShapeMismatch, providerHeaders, smokeTestProviderEndpoint} from "./provider-runtime.ts";
 
 const settings = {reasoning: "high", showReasoningSummary: true, temperature: 0.3, maxOutputTokens: 123};
 
@@ -69,10 +69,58 @@ describe("local Provider runtime", () => {
 
   test("discovers models independently from the embedded catalog", () => {
     expect(inferredDiscoveryUrl(profile("openai-chat"))).toBe("https://models.example/v1/models");
+    expect(inferredDiscoveryUrl(profile("google"))).toBe("https://models.example/v1/models?pageSize=50");
     expect(normalizeDiscoveredModels({data: [{id: "model-a", owned_by: "local"}]})).toEqual([
       {id: "model-a", name: "model-a", ownedBy: "local", source: "discovered"}
     ]);
     const headers = providerHeaders(profile("google", {auth: {type: "header", header: "x-goog-api-key"}}), {apiKey: "key"});
     expect(headers.get("x-goog-api-key")).toBe("key");
+  });
+});
+
+describe("protocol shape checks", () => {
+  test("distinguishes OpenAI, Anthropic and Google model-list shapes", () => {
+    expect(protocolShapeMismatch("google", {models: [{name: "models/gemini"}]})).toBeNull();
+    expect(protocolShapeMismatch("google", {data: [{id: "a"}]})).not.toBeNull();
+    expect(protocolShapeMismatch("anthropic", {data: [{id: "a"}], has_more: false})).toBeNull();
+    expect(protocolShapeMismatch("anthropic", {data: [{id: "a"}]})).not.toBeNull();
+    expect(protocolShapeMismatch("openai-chat", {data: [{id: "a"}]})).toBeNull();
+    expect(protocolShapeMismatch("openai-chat", {data: [{id: "a"}], has_more: false})).not.toBeNull();
+    expect(protocolShapeMismatch("openai-responses", {data: [{id: "a"}]})).toBeNull();
+    expect(protocolShapeMismatch("openai-chat", null)).not.toBeNull();
+  });
+
+  test("applies strict shape checks during discovery only when requested", async () => {
+    const providerFetch = async () => Response.json({data: [{id: "model-a"}]});
+    await expect(discoverProviderModels(profile("anthropic"), {}, providerFetch)).resolves.toHaveLength(1);
+    await expect(discoverProviderModels(profile("anthropic"), {}, providerFetch, {strictShape: true})).rejects.toThrow("不匹配");
+  });
+});
+
+describe("endpoint smoke tests", () => {
+  test("classifies chat-endpoint responses for every protocol", async () => {
+    const models = [{id: "gemini-1.5-flash", name: "gemini-1.5-flash", source: "discovered"}];
+    const cases = [
+      ["openai-chat", "https://models.example/v1/chat/completions"],
+      ["openai-responses", "https://models.example/v1/responses"],
+      ["anthropic", "https://models.example/v1/messages"]
+    ];
+    for (const [protocol, url] of cases) {
+      const fetch401 = async (input) => { expect(String(input)).toBe(url); return new Response("nope", {status: 401}); };
+      expect(await smokeTestProviderEndpoint(profile(protocol), {apiKey: "k"}, models, fetch401)).toBe("auth-denied");
+      const fetch404 = async (input) => { expect(String(input)).toBe(url); return new Response("nope", {status: 404}); };
+      expect(await smokeTestProviderEndpoint(profile(protocol), {apiKey: "k"}, models, fetch404)).toBe("missing-route");
+      const fetch400 = async (input) => { expect(String(input)).toBe(url); return Response.json({error: {message: "model is required"}}, {status: 400}); };
+      expect(await smokeTestProviderEndpoint(profile(protocol), {apiKey: "k"}, models, fetch400)).toBe("ok");
+    }
+    const googleUrl = "https://models.example/v1/models/gemini-1.5-flash:streamGenerateContent?alt=sse";
+    const googleFetch = async (input) => { expect(String(input)).toBe(googleUrl); return Response.json({error: {message: "content is required"}}, {status: 400}); };
+    expect(await smokeTestProviderEndpoint(profile("google"), {}, models, googleFetch)).toBe("ok");
+  });
+
+  test("detects auth failures mentioned in 4xx bodies", async () => {
+    const providerFetch = async () => Response.json({error: {message: "Invalid API key provided"}}, {status: 400});
+    const models = [{id: "a", name: "a", source: "manual"}];
+    expect(await smokeTestProviderEndpoint(profile("openai-chat"), {apiKey: "k"}, models, providerFetch)).toBe("auth-denied");
   });
 });

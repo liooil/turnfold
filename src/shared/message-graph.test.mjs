@@ -1,5 +1,15 @@
 import {describe, expect, test} from "bun:test";
-import {mergeMessageGraph, messageChildrenInGraph, messagePathInGraph, newestBranchTipInGraph, rootEditAlternativesInGraph} from "./message-graph.ts";
+import {
+  indexMessageGraph,
+  mergeMessageGraph,
+  messageChildrenInGraph,
+  messageChildrenInIndex,
+  messagePathInGraph,
+  newestBranchTipInGraph,
+  newestBranchTipInIndex,
+  rootEditAlternativesInGraph,
+  rootEditAlternativesInIndex
+} from "./message-graph.ts";
 
 const node = (id, parentMessageId, createdAt) => ({
   id, parentMessageId, role: id.startsWith("a") ? "assistant" : "user", parts: [],
@@ -42,5 +52,35 @@ describe("message graph", () => {
     const unrelated = node("u4", null, "2026-01-01T00:00:05Z");
     const roots = mergeMessageGraph([...graph.values()], [editedRoot, unrelated]);
     expect(rootEditAlternativesInGraph(roots, "u3").map((message) => message.id)).toEqual(["u1", "u3"]);
+  });
+
+  test("index children lookups match the map scans", () => {
+    const index = indexMessageGraph([root, answerA], [answerB, followupB]);
+    expect(messageChildrenInIndex(index, "u1").map((message) => message.id)).toEqual(["a1", "a2"]);
+    expect(messageChildrenInIndex(index, "missing")).toEqual([]);
+    expect(index.roots.map((message) => message.id)).toEqual(["u1"]);
+  });
+
+  test("index root edit alternatives match the map scans", () => {
+    const editedRoot = {...node("u3", null, "2026-01-01T00:00:04Z"), origin: {type: "user", sourceMessageId: "u1"}};
+    const unrelated = node("u4", null, "2026-01-01T00:00:05Z");
+    const index = indexMessageGraph([root, answerA, answerB, followupB, editedRoot, unrelated]);
+    expect(rootEditAlternativesInIndex(index, "u3").map((message) => message.id)).toEqual(["u1", "u3"]);
+    expect(rootEditAlternativesInIndex(index, "u4").map((message) => message.id)).toEqual(["u4"]);
+    expect(rootEditAlternativesInIndex(index, "missing")).toEqual([]);
+  });
+
+  test("index root edit alternatives merge roots through a shared non-root source", () => {
+    const editedA = {...node("u3", null, "2026-01-01T00:00:04Z"), origin: {type: "user", sourceMessageId: "a9"}};
+    const editedB = {...node("u4", null, "2026-01-01T00:00:05Z"), origin: {type: "user", sourceMessageId: "a9"}};
+    const unrelated = node("u5", null, "2026-01-01T00:00:06Z");
+    const index = indexMessageGraph([editedA, editedB, unrelated]);
+    expect(rootEditAlternativesInIndex(index, "u3").map((message) => message.id)).toEqual(["u3", "u4"]);
+  });
+
+  test("index newest branch tip matches the map scans", () => {
+    const index = indexMessageGraph([root, answerA], [answerB, followupB]);
+    expect(newestBranchTipInIndex(index, "a1", new Set(["u1", "a1"]), "a1")).toBe("a1");
+    expect(newestBranchTipInIndex(index, "a2", new Set(["u1", "a1"]), "a1")).toBe("u2");
   });
 });

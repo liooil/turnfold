@@ -22,7 +22,7 @@ function outputTokens(value: unknown) {
   return undefined;
 }
 
-export function providerHeaders(profile: ProviderProfile, secret: ProviderSecret, initial: HeadersInit = {}) {
+export function providerHeaders(profile: Omit<ProviderProfile, "createdAt" | "updatedAt">, secret: ProviderSecret, initial: HeadersInit = {}) {
   const headers = new Headers(initial);
   headers.delete("authorization");
   headers.delete("x-api-key");
@@ -262,17 +262,69 @@ export function normalizeDiscoveredModels(payload: unknown): ProviderModel[] {
 export function inferredDiscoveryUrl(profile: ProviderProfile) {
   if (profile.discoveryUrl.trim()) return profile.discoveryUrl.trim();
   if (profile.protocol === "anthropic") return endpoint(profile.baseUrl, "models?limit=200");
-  if (profile.protocol === "google") return endpoint(profile.baseUrl, "models?pageSize=200");
+  if (profile.protocol === "google") return endpoint(profile.baseUrl, "models?pageSize=50");
   return endpoint(profile.baseUrl, "models");
 }
 
-export async function discoverProviderModels(profile: ProviderProfile, secret: ProviderSecret, providerFetch: ProviderFetch = fetch) {
+export async function discoverProviderModels(profile: ProviderProfile, secret: ProviderSecret, providerFetch: ProviderFetch = fetch, options: {strictShape?: boolean} = {}) {
   const response = await providerFetch(inferredDiscoveryUrl(profile), {
     headers: providerHeaders(profile, secret, {"Accept": "application/json"}),
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) throw new Error(`Provider HTTP ${response.status}`);
-  const models = normalizeDiscoveredModels(await response.json());
+  const payload = await response.json();
+  if (options.strictShape) {
+    const mismatch = protocolShapeMismatch(profile.protocol, payload);
+    if (mismatch) throw new Error(`模型列表与 ${profile.protocol} 协议不匹配：${mismatch}`);
+  }
+  const models = normalizeDiscoveredModels(payload);
   if (!models.length) throw new Error("Provider 没有返回可用模型");
   return models;
+}
+
+export function protocolShapeMismatch(protocol: ProviderProtocol, payload: unknown): string | null {
+  const root = record(payload);
+  if (!root) return "响应不是 JSON 对象";
+  if (protocol === "google") {
+    return Array.isArray(root.models) && root.models.length ? null : "缺少 Google 格式的 models 列表";
+  }
+  if (!Array.isArray(root.data) || !root.data.length) return "缺少 data 模型列表";
+  if (protocol === "anthropic") return typeof root.has_more === "boolean" ? null : "缺少 Anthropic 的 has_more 字段";
+  return typeof root.has_more === "boolean" ? "响应形如 Anthropic（含 has_more 字段），不是 OpenAI 格式" : null;
+}
+
+export type EndpointSmokeResult = "ok" | "auth-denied" | "missing-route";
+
+const AUTH_FAILURE_PATTERN = /api[ _-]?key|unauthori[sz]ed|authentication|invalid (credential|token|api)|permission denied/i;
+
+function smokeRequest(profile: Omit<ProviderProfile, "createdAt" | "updatedAt">, secret: ProviderSecret, models: ProviderModel[]) {
+  const init = {method: "POST", headers: providerHeaders(profile, secret, {"Content-Type": "application/json"}), body: "{}"} satisfies RequestInit;
+  if (profile.protocol === "anthropic") return {url: endpoint(profile.baseUrl, "messages"), init};
+  if (profile.protocol === "google") {
+    if (!models[0]) throw new Error("没有可用于冒烟测试的模型");
+    return {url: `${endpoint(profile.baseUrl, `models/${encodeURIComponent(models[0].id)}:streamGenerateContent`)}?alt=sse`, init};
+  }
+  return {url: endpoint(profile.baseUrl, profile.protocol === "openai-responses" ? "responses" : "chat/completions"), init};
+}
+
+export async function smokeTestProviderEndpoint(
+  profile: Omit<ProviderProfile, "createdAt" | "updatedAt">,
+  secret: ProviderSecret,
+  models: ProviderModel[],
+  providerFetch: ProviderFetch = fetch
+): Promise<EndpointSmokeResult> {
+  const request = smokeRequest(profile, secret, models);
+  const response = await providerFetch(request.url, {...request.init, signal: AbortSignal.timeout(15000)});
+  if (response.status === 401 || response.status === 403) return "auth-denied";
+  if (response.status === 404 || response.status === 405) return "missing-route";
+  if (response.status >= 400) {
+    let body = "";
+    try {
+      body = (await response.text()).slice(0, 500);
+    } catch {
+      // 响应体不可读时按普通 4xx 处理
+    }
+    if (AUTH_FAILURE_PATTERN.test(body)) return "auth-denied";
+  }
+  return "ok";
 }

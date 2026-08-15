@@ -1,5 +1,12 @@
 import type {Conversation, StoredChatMessage} from "../shared/conversation-types";
-import {mergeMessageGraph, messageChildrenInGraph, messagePathInGraph, newestBranchTipInGraph} from "../shared/message-graph";
+import {
+  indexMessageGraph,
+  messageChildrenInIndex,
+  messagePathInGraph,
+  newestBranchTipInIndex,
+  rootEditAlternativesInIndex,
+  type MessageGraphIndex
+} from "../shared/message-graph";
 import type {AppState} from "./app-state";
 
 export function messagePartText(message: StoredChatMessage, type: "text" | "reasoning") {
@@ -7,13 +14,37 @@ export function messagePartText(message: StoredChatMessage, type: "text" | "reas
 }
 
 export function createConversationSelectors(state: AppState) {
+  let cached: {graphRef: StoredChatMessage[]; messagesRef: StoredChatMessage[] | null; index: MessageGraphIndex} | null = null;
+  let indexVersion = 0;
+
+  /**
+   * Memoized message graph index. Rebuilds only when the underlying message
+   * arrays are replaced (every mutation path replaces them with new arrays),
+   * so repeated lookups during a render are O(1) instead of O(N).
+   */
+  function messageIndex(): MessageGraphIndex {
+    const graph = state.messageGraph;
+    const messages = state.conversation?.messages ?? null;
+    if (!cached || cached.graphRef !== graph || cached.messagesRef !== messages) {
+      cached = {graphRef: graph, messagesRef: messages, index: indexMessageGraph(graph, messages ?? [])};
+      indexVersion += 1;
+    }
+    return cached.index;
+  }
+
+  function graphVersion() {
+    messageIndex();
+    return indexVersion;
+  }
+
   function knownMessageMap() {
-    return mergeMessageGraph(state.messageGraph, state.conversation?.messages || []);
+    return messageIndex().map;
   }
 
   function conversationGraphObjects(conversation: Conversation) {
     if (!conversation.headMessageId) return [];
-    const messages = [...knownMessageMap().values()];
+    const index = messageIndex();
+    const messages = [...index.map.values()];
     const adjacent = new Map<string, Set<string>>();
     const connect = (left: string, right: string) => {
       if (!adjacent.has(left)) adjacent.set(left, new Set());
@@ -37,7 +68,7 @@ export function createConversationSelectors(state: AppState) {
   }
 
   function messagePathTo(headMessageId: string | null) {
-    return messagePathInGraph(knownMessageMap(), headMessageId);
+    return messagePathInGraph(messageIndex().map, headMessageId);
   }
 
   function displayedMessages() {
@@ -46,13 +77,17 @@ export function createConversationSelectors(state: AppState) {
   }
 
   function messageChildren(parentMessageId: string | null) {
-    return messageChildrenInGraph(knownMessageMap(), parentMessageId);
+    return messageChildrenInIndex(messageIndex(), parentMessageId);
+  }
+
+  function rootEditAlternatives(messageId: string) {
+    return rootEditAlternativesInIndex(messageIndex(), messageId);
   }
 
   function newestBranchTip(startId: string) {
     const currentIds = new Set((state.conversation?.messages || []).map((message) => message.id));
-    return newestBranchTipInGraph(knownMessageMap(), startId, currentIds, state.conversation?.headMessageId || null);
+    return newestBranchTipInIndex(messageIndex(), startId, currentIds, state.conversation?.headMessageId || null);
   }
 
-  return {conversationGraphObjects, displayedMessages, knownMessageMap, messageChildren, messagePathTo, newestBranchTip};
+  return {conversationGraphObjects, displayedMessages, graphVersion, knownMessageMap, messageChildren, messagePathTo, newestBranchTip, rootEditAlternatives};
 }

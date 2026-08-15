@@ -28,4 +28,37 @@ describe("conversation selectors", () => {
     expect(state.conversation.messages.map((item) => item.id)).toEqual(["u1", "a1"]);
     expect(messagePartText(alternative, "text")).toBe("alternative");
   });
+
+  test("memoizes the message graph index across repeated calls", () => {
+    const root = message("u1", null, "root");
+    const current = message("a1", "u1", "current");
+    const state = {
+      messageGraph: [root],
+      conversation: {headMessageId: "a1", messages: [root, current]},
+      previewHeadId: ""
+    };
+    const selectors = createConversationSelectors(state);
+    const first = selectors.knownMessageMap();
+    expect(selectors.knownMessageMap()).toBe(first);
+
+    state.conversation = {...state.conversation, messages: [...state.conversation.messages]};
+    expect(selectors.knownMessageMap()).not.toBe(first);
+    const second = selectors.knownMessageMap();
+    expect(selectors.knownMessageMap()).toBe(second);
+  });
+
+  test("returns sorted edit alternatives and children from the memoized index", () => {
+    const root = message("u1", null, "root");
+    const edited = {...message("u1b", null, "edited"), origin: {type: "user", sourceMessageId: "u1"}};
+    const unrelated = message("u2", null, "unrelated");
+    const state = {
+      messageGraph: [root, edited, unrelated],
+      conversation: {headMessageId: "u1", messages: [root]},
+      previewHeadId: ""
+    };
+    const selectors = createConversationSelectors(state);
+    expect(selectors.rootEditAlternatives("u1b").map((item) => item.id)).toEqual(["u1", "u1b"]);
+    expect(selectors.rootEditAlternatives("missing")).toEqual([]);
+    expect(selectors.messageChildren("u1")).toEqual([]);
+  });
 });
