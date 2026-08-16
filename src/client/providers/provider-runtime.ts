@@ -1,8 +1,19 @@
 import type {GenerationSettings} from "../../shared/generation-settings";
 import type {ProviderMessage, ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret, ProviderStreamEvent} from "../../shared/provider-types";
+import {describeProviderRequestError} from "./provider-diagnostics";
 
 type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type JsonRecord = Record<string, unknown>;
+
+async function providerFetchWithDiagnostics(url: string, init: RequestInit, providerFetch: ProviderFetch) {
+  try {
+    return await providerFetch(url, init);
+  } catch (error) {
+    const message = await describeProviderRequestError(url, error);
+    if (message) throw new Error(message, {cause: error});
+    throw error;
+  }
+}
 
 function record(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : null;
@@ -235,7 +246,7 @@ export async function streamProvider(
   providerFetch: ProviderFetch = fetch
 ) {
   const request = createProviderRequest(profile, secret, model, messages, settings, signal);
-  const response = await providerFetch(request.url, request.init);
+  const response = await providerFetchWithDiagnostics(request.url, request.init, providerFetch);
   return parseProviderStream(profile.protocol, response, onEvent);
 }
 
@@ -267,10 +278,11 @@ export function inferredDiscoveryUrl(profile: ProviderProfile) {
 }
 
 export async function discoverProviderModels(profile: ProviderProfile, secret: ProviderSecret, providerFetch: ProviderFetch = fetch, options: {strictShape?: boolean} = {}) {
-  const response = await providerFetch(inferredDiscoveryUrl(profile), {
+  const discoveryUrl = inferredDiscoveryUrl(profile);
+  const response = await providerFetchWithDiagnostics(discoveryUrl, {
     headers: providerHeaders(profile, secret, {"Accept": "application/json"}),
     signal: AbortSignal.timeout(15000)
-  });
+  }, providerFetch);
   if (!response.ok) throw new Error(`Provider HTTP ${response.status}`);
   const payload = await response.json();
   if (options.strictShape) {
@@ -314,7 +326,7 @@ export async function smokeTestProviderEndpoint(
   providerFetch: ProviderFetch = fetch
 ): Promise<EndpointSmokeResult> {
   const request = smokeRequest(profile, secret, models);
-  const response = await providerFetch(request.url, {...request.init, signal: AbortSignal.timeout(15000)});
+  const response = await providerFetchWithDiagnostics(request.url, {...request.init, signal: AbortSignal.timeout(15000)}, providerFetch);
   if (response.status === 401 || response.status === 403) return "auth-denied";
   if (response.status === 404 || response.status === 405) return "missing-route";
   if (response.status >= 400) {

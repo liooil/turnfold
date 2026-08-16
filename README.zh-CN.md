@@ -104,6 +104,21 @@ docker run --rm -p 3000:3000 -e BASE_PATH=/turnfold -v turnfold-data:/data turnf
 
 升级早期版本前请保留备份。
 
+## 常见问题
+
+### 在 GitHub Pages 上打开 Turnfold，访问局域网 HTTP 模型时报 Mixed Content，怎么办？
+
+GitHub Pages 是 HTTPS 页面，浏览器会阻止它加载 `http://192.168.x.x:11434` 这类不安全资源。Service Worker 不能绕过这个限制。
+
+建议的解决办法：
+
+- 给局域网模型服务配置 HTTPS 反向代理（例如 Caddy/Nginx + mkcert），并在 Turnfold 中使用 `https://` 地址。
+- 仅限本机调试时，可以在浏览器中允许该站点加载不安全内容。
+- 如果主要在局域网内使用，也可以直接运行 Turnfold 并通过 `http://<局域网IP>:3000` 访问，而不是使用 GitHub Pages。
+
+即使解决了 Mixed Content，局域网模型或代理还需要允许来自 Pages 域名的 CORS，并可能需要 `Access-Control-Allow-Private-Network: true`。
+
+
 ## 安全
 
 不要提交 API Key、数据库或导出的对话归档。Provider 密钥保存在当前浏览器的 IndexedDB 中，绝不会发送给 Turnfold 服务器。与所有浏览器端密钥一样，同源脚本可以访问它们，因此部署时应使用严格的 CSP，并且只加载可信资源。

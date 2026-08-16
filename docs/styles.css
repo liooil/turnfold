@@ -158,3 +158,63 @@ footer a:hover { color: var(--ink); }
   html { scroll-behavior: auto; }
   .button { transition: none; }
 }
+
+.faq {
+  padding: 0 0 112px;
+}
+.faq .section-heading {
+  margin-bottom: 40px;
+}
+.faq-list {
+  max-width: 860px;
+  border-top: 1px solid var(--ink);
+  border-left: 1px solid var(--ink);
+}
+.faq-list details {
+  border-right: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+  background: #faf9f4;
+}
+.faq-list summary {
+  padding: 20px 24px;
+  cursor: pointer;
+  font-weight: 750;
+  letter-spacing: -.01em;
+  list-style: none;
+}
+.faq-list summary::-webkit-details-marker {
+  display: none;
+}
+.faq-list summary::before {
+  content: "+";
+  display: inline-block;
+  width: 1.4em;
+  color: var(--accent);
+  font-weight: 850;
+}
+.faq-list details[open] summary::before {
+  content: "–";
+}
+.faq-list details > div {
+  padding: 0 24px 22px 3.4em;
+  color: var(--muted);
+}
+.faq-list p {
+  margin: 0 0 10px;
+}
+.faq-list ul {
+  margin: 0 0 12px;
+  padding-left: 1.2em;
+}
+.faq-list li + li {
+  margin-top: 6px;
+}
+
+@media (max-width: 800px) {
+  .faq-list summary {
+    padding: 18px;
+  }
+  .faq-list details > div {
+    padding: 0 18px 18px 2.6em;
+  }
+}

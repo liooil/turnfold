@@ -23,6 +23,7 @@
     <nav aria-label="Primary navigation">
       <a href="#features"><span data-lang="zh">特性</span><span data-lang="en">Features</span></a>
       <a href="#start"><span data-lang="zh">开始使用</span><span data-lang="en">Get started</span></a>
+      <a href="#faq"><span data-lang="zh">常见问题</span><span data-lang="en">FAQ</span></a>
       <a href="https://github.com/liooil/turnfold">GitHub</a>
       <div class="language" role="group" aria-label="Language">
         <button type="button" data-set-lang="zh" aria-pressed="true">中</button>
@@ -137,6 +138,27 @@
 cd turnfold
 docker compose up --build -d</code></pre>
         <p>→ http://localhost:3000</p>
+      </div>
+    </section>
+    <section class="faq" id="faq">
+      <div class="section-heading">
+        <p class="eyebrow"><span data-lang="zh">帮助手册</span><span data-lang="en">Help</span></p>
+        <h2><span data-lang="zh">常见问题</span><span data-lang="en">FAQ</span></h2>
+      </div>
+      <div class="faq-list">
+        <details open>
+          <summary><span data-lang="zh">在 GitHub Pages 上打开 Turnfold，访问局域网 HTTP 模型时报 Mixed Content，怎么办？</span><span data-lang="en">Turnfold on GitHub Pages reports Mixed Content when accessing an HTTP LAN model. What can I do?</span></summary>
+          <div>
+            <p><span data-lang="zh">GitHub Pages 是 HTTPS 页面，浏览器默认会阻止它加载 http://192.168.x.x 这类不安全资源。Service Worker 也不能绕过这个限制。</span><span data-lang="en">GitHub Pages is served over HTTPS, and browsers block insecure HTTP resources such as http://192.168.x.x. A service worker cannot bypass this restriction.</span></p>
+            <p><span data-lang="zh">建议按以下方式解决：</span><span data-lang="en">Recommended solutions:</span></p>
+            <ul>
+              <li><span data-lang="zh">给局域网模型服务配置 HTTPS 反向代理（如 Caddy/Nginx + mkcert），并在 Turnfold 中使用 https:// 地址。</span><span data-lang="en">Set up an HTTPS reverse proxy (for example Caddy/Nginx with mkcert) for the LAN model and use an https:// URL in Turnfold.</span></li>
+              <li><span data-lang="zh">仅限本机调试时，可以在浏览器中允许该站点加载不安全内容。</span><span data-lang="en">For local debugging only, allow insecure content for the site in your browser.</span></li>
+              <li><span data-lang="zh">如果主要在局域网内使用，也可以直接通过 http://局域网IP:3000 访问自托管的 Turnfold，而不是使用 GitHub Pages。</span><span data-lang="en">If you mainly use it on your LAN, run Turnfold locally and open http://lan-ip:3000 instead of GitHub Pages.</span></li>
+            </ul>
+            <p><span data-lang="zh">即使解决了 Mixed Content，局域网模型或代理还需要允许来自 GitHub Pages 的 CORS，并可能需要 Access-Control-Allow-Private-Network: true。</span><span data-lang="en">Even after fixing Mixed Content, the LAN model or proxy must allow CORS from GitHub Pages and may need Access-Control-Allow-Private-Network: true.</span></p>
+          </div>
+        </details>
       </div>
     </section>
   </main>

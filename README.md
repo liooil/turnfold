@@ -106,6 +106,21 @@ Then open <http://localhost:3000/turnfold/>.
 
 Keep backups before upgrading an early release.
 
+## FAQ
+
+### Why does Turnfold on GitHub Pages report Mixed Content when I connect to a LAN model over HTTP?
+
+GitHub Pages is HTTPS, so browsers block requests to insecure HTTP resources such as `http://192.168.x.x:11434`. A service worker cannot bypass this restriction.
+
+Recommended solutions:
+
+- Set up an HTTPS reverse proxy (for example Caddy/Nginx with mkcert) for the LAN model and use an `https://` URL in Turnfold.
+- For local debugging only, allow insecure content for the site in your browser.
+- If you mainly use Turnfold on your LAN, run it locally and open `http://<lan-ip>:3000` instead of GitHub Pages.
+
+Even after fixing Mixed Content, the LAN model or proxy must allow CORS from the Pages origin and may need `Access-Control-Allow-Private-Network: true`.
+
+
 ## Security
 
 Never commit API keys, database files, or exported conversation archives. Provider keys remain in the current browser's IndexedDB and are never sent to the Turnfold server. As with any browser-held secret, scripts running under the same origin can access it; deploy with a strict CSP and only trusted assets.
