@@ -70,8 +70,8 @@ function renderApp() {
   const usableProvider = state.config.providers.some((item) => item.models.length > 0);
   const workspace = state.conversation
     ? threadView.renderThread()
-    : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>开始一个新对话</h1><p>${usableProvider ? "当前模型已就绪，也可以只记录消息而不请求回答。" : "无需配置模型即可记录消息；配置模型后才能勾选“需要回答”。"}</p><button type="button" data-action="new-conversation">新对话</button></section>`;
-  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${identityView.renderIdentitySyncControl(profile)}</div></header>${historyView.renderHistory()}${workspace}${sessionTransferController.renderImportPanel()}${settingsView.renderSettingsPage()}</main>`, appDomReconcileOptions);
+    : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>开始一个新对话</h1><p>${usableProvider ? "当前模型已就绪，也可以只记录消息而不请求回答。" : "无需配置模型即可记录消息；配置模型后才能勾选“需要回答”。"}</p><button type="button" data-action="new-conversation" title="开始一个新对话">新对话</button></section>`;
+  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史" title="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${identityView.renderIdentitySyncControl(profile)}</div></header>${historyView.renderHistory()}${workspace}${sessionTransferController.renderImportPanel()}${settingsView.renderSettingsPage()}</main>`, appDomReconcileOptions);
   if (state.conversation) messageListView.renderMessages();
   window.requestAnimationFrame(() => composerView.syncComposerInputLayout());
   void updateAvatar(root, profile);
@@ -235,6 +235,15 @@ function showError(error: unknown) {
   window.alert(error instanceof Error ? error.message : "操作失败");
 }
 
+const popupDetailsSelector = "[data-popup]";
+
+function closePopupDetails(clickTarget?: Element) {
+  const clickedPopup = clickTarget?.closest<HTMLDetailsElement>(popupDetailsSelector) || null;
+  root.querySelectorAll<HTMLDetailsElement>(popupDetailsSelector).forEach((popup) => {
+    if (popup !== clickedPopup && popup.open) popup.open = false;
+  });
+}
+
 root.addEventListener("submit", (event) => {
   if (!(event.target instanceof HTMLFormElement)) return;
   if (providerController.handleSubmit(event.target)) {
@@ -279,6 +288,7 @@ root.addEventListener("input", (event) => {
   if (sessionTransferController.handleInput(target)) return;
   if (target instanceof HTMLTextAreaElement && target.name === "message") {
     composerView.syncComposerInputLayout(target);
+    messageListView.updateScrollButton();
     if (state.conversation) {
       let draft = draftModel.activeDraft();
       if (!draft) {
@@ -341,6 +351,7 @@ root.addEventListener("change", (event) => {
 });
 
 root.addEventListener("click", (event) => {
+  closePopupDetails(event.target instanceof Element ? event.target : undefined);
   const button = (event.target as Element).closest<HTMLElement>("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
@@ -417,7 +428,7 @@ document.addEventListener("visibilitychange", () => {
   if (draft) void draftActions.persistWorkingItem(draft);
 });
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register(appUrl("/sw.js?v=7"), {scope: `${basePath}/`}).catch((error) => console.error("Unable to register service worker", error));
+if ("serviceWorker" in navigator) navigator.serviceWorker.register(appUrl("/sw.js?v=9"), {scope: `${basePath}/`}).catch((error) => console.error("Unable to register service worker", error));
 
 renderApp();
 bootstrap.initialize().catch((error) => {

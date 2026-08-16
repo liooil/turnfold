@@ -34,7 +34,7 @@ export function createComposerView(state: AppState, dependencies: ComposerDepend
     const latestId = messages.at(-1)?.id || null;
     const showReplyContext = Boolean(draft && !draft.editSourceMessageId && targetId !== latestId);
     const replyContext = showReplyContext
-      ? `<div class="reply-context" aria-label="指定回复目标"><span class="reply-context-icon" title="回复到" aria-hidden="true">${dependencies.icons.reply}</span><button type="button" data-action="jump-reply-target" data-id="${escapeHtml(targetId || "__root__")}" aria-label="跳转到回复目标：${escapeHtml(target ? replyTargetLabel(target) : "会话开头")}">${escapeHtml(target ? replyTargetLabel(target) : "会话开头")}</button><button class="reply-cancel" type="button" data-action="cancel-reply-target" aria-label="取消指定回复目标">${dependencies.icons.close}</button></div>`
+      ? `<div class="reply-context" aria-label="指定回复目标"><span class="reply-context-icon" title="回复到" aria-hidden="true">${dependencies.icons.reply}</span><button type="button" data-action="jump-reply-target" data-id="${escapeHtml(targetId || "__root__")}" aria-label="跳转到回复目标：${escapeHtml(target ? replyTargetLabel(target) : "会话开头")}" title="跳转到回复目标：${escapeHtml(target ? replyTargetLabel(target) : "会话开头")}">${escapeHtml(target ? replyTargetLabel(target) : "会话开头")}</button><button class="reply-cancel" type="button" data-action="cancel-reply-target" aria-label="取消指定回复目标" title="取消指定回复目标">${dependencies.icons.close}</button></div>`
       : "";
     const incompleteControl = target?.completion.status === "partial"
       ? `<label>未完成消息<select data-action="incomplete-target-action"><option value="append"${draft?.incompleteTargetAction !== "interrupt" ? " selected" : ""}>排在它下面</option><option value="interrupt"${draft?.incompleteTargetAction === "interrupt" ? " selected" : ""}>中断并替换它</option></select></label>`
@@ -57,22 +57,29 @@ export function createComposerView(state: AppState, dependencies: ComposerDepend
       : "";
     const draftRows = drafts.map((item) => {
       const text = workingItemText(item).trim().replace(/\s+/g, " ");
-      return `<div class="draft-row" data-dom-key="draft:${escapeHtml(item.id)}"><button type="button" data-action="select-draft" data-id="${escapeHtml(item.id)}"><strong>${escapeHtml(text.slice(0, 36) || "空白草稿")}</strong><small>${draftLabel(item)} · ${new Date(item.updatedAt).toLocaleString()}</small></button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" aria-label="删除草稿">${dependencies.icons.trash}</button></div>`;
+      return `<div class="draft-row" data-dom-key="draft:${escapeHtml(item.id)}"><button type="button" data-action="select-draft" data-id="${escapeHtml(item.id)}" title="恢复这条草稿"><strong>${escapeHtml(text.slice(0, 36) || "空白草稿")}</strong><small>${draftLabel(item)} · ${new Date(item.updatedAt).toLocaleString()}</small></button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" aria-label="删除草稿" title="删除草稿">${dependencies.icons.trash}</button></div>`;
     }).join("");
     const unfinishedRows = unfinished.map((item) => {
       const text = workingItemText(item).trim().replace(/\s+/g, " ");
-      return `<div class="unfinished-row" data-dom-key="unfinished:${escapeHtml(item.id)}"><span><strong>未完成回答</strong><small>${escapeHtml(text.slice(0, 64) || "尚未输出正文")} · ${new Date(item.updatedAt).toLocaleString()}</small></span><button type="button" data-action="commit-partial" data-id="${escapeHtml(item.id)}">保留</button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}">清理</button></div>`;
+      return `<div class="unfinished-row" data-dom-key="unfinished:${escapeHtml(item.id)}"><span><strong>未完成回答</strong><small>${escapeHtml(text.slice(0, 64) || "尚未输出正文")} · ${new Date(item.updatedAt).toLocaleString()}</small></span><button type="button" data-action="commit-partial" data-id="${escapeHtml(item.id)}" title="保留这条未完成回答">保留</button><button type="button" data-action="delete-working" data-id="${escapeHtml(item.id)}" title="清理这条未完成回答">清理</button></div>`;
     }).join("");
     const canStash = dependencies.canStashActiveDraft();
-    return `<div class="working-panel">${assistantReplyToggle}${renderComposerControls(dependencies.activeDraft())}${unfinishedRows ? `<details class="unfinished-menu"><summary>未完成 ${unfinished.length}</summary><div>${unfinishedRows}</div></details>` : ""}<details class="draft-menu"><summary>草稿 ${drafts.length}</summary><div><button class="stash-draft" type="button" data-action="stash-draft" aria-label="将当前编辑区收起为草稿" title="${canStash ? "将当前编辑区收起到草稿列表" : "当前编辑区为空"}"${canStash ? "" : " disabled"}>${dependencies.icons.stash}收起为草稿</button>${draftRows}</div></details></div>`;
+    // 没有已存草稿时不再展示“草稿 0”；若当前编辑区有内容，
+    // 将入口收敛为一个可直接存草稿的紧凑按钮。
+    const draftMenu = drafts.length
+      ? `<details class="draft-menu" data-popup><summary>草稿 ${drafts.length}</summary><div><button class="stash-draft" type="button" data-action="stash-draft" aria-label="将当前编辑区收起为草稿" title="${canStash ? "将当前编辑区收起到草稿列表" : "当前编辑区为空"}"${canStash ? "" : " disabled"}>${dependencies.icons.stash}收起为草稿</button>${draftRows}</div></details>`
+      : `<button class="draft-stash-trigger" type="button" data-action="stash-draft" aria-label="将当前编辑区收起为草稿" title="${canStash ? "将当前编辑区收起为草稿" : "当前编辑区为空"}"${canStash ? "" : " hidden"}>${dependencies.icons.stash}<span>存草稿</span></button>`;
+    return `<div class="working-panel">${assistantReplyToggle}${renderComposerControls(dependencies.activeDraft())}${unfinishedRows ? `<details class="unfinished-menu" data-popup><summary>未完成 ${unfinished.length}</summary><div>${unfinishedRows}</div></details>` : ""}${draftMenu}</div>`;
   }
 
   function updateDraftStashControl() {
     const button = dependencies.root.querySelector<HTMLButtonElement>('[data-action="stash-draft"]');
     if (!button) return;
     const canStash = dependencies.canStashActiveDraft();
+    const compactTrigger = button.classList.contains("draft-stash-trigger");
+    if (compactTrigger) button.hidden = !canStash;
     button.disabled = !canStash;
-    button.title = canStash ? "将当前编辑区收起到草稿列表" : "当前编辑区为空";
+    button.title = canStash ? (compactTrigger ? "将当前编辑区收起为草稿" : "将当前编辑区收起到草稿列表") : "当前编辑区为空";
   }
 
   const compactComposerLineLimit = 3;

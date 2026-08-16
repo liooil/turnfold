@@ -1,5 +1,5 @@
 const cachePrefix = "turnfold-";
-const cacheName = `${cachePrefix}shell-v8`;
+const cacheName = `${cachePrefix}shell-v9`;
 const basePath = "__BASE_PATH__";
 const shellAssets = [
   "__APP_ROOT__",
@@ -33,6 +33,10 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith(`${basePath}/api/`) || url.pathname.startsWith("/outpost.goauthentik.io/")) return;
+
+  // Bun's dev server reuses the same /_bun/asset/* URL after a CSS reload,
+  // so caching those responses cache-first would keep serving stale styles.
+  if (url.pathname.startsWith("/_bun/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(fetch(request).then((response) => {

@@ -53,6 +53,14 @@ export function createDraftActions(state: AppState, dependencies: DraftActionDep
     }, 300));
   }
 
+  function setComposerText(value: string) {
+    const input = dependencies.root.querySelector<HTMLTextAreaElement>('textarea[name="message"]');
+    if (!input) return null;
+    input.value = value;
+    dependencies.syncComposerInputLayout(input);
+    return input;
+  }
+
   async function editMessage(index: number) {
     if (state.streaming || !state.conversation) return;
     const message = dependencies.displayedMessages()[index];
@@ -134,26 +142,34 @@ export function createDraftActions(state: AppState, dependencies: DraftActionDep
     state.activeDraftId = "";
     state.composerFullscreen = false;
     dependencies.renderApp();
-    dependencies.root.querySelector<HTMLTextAreaElement>('textarea[name="message"]')?.focus();
+    setComposerText("")?.focus();
   }
 
   async function activateDraft(id: string) {
     const next = state.workingItems.find((item) => item.id === id && item.kind === "user-draft");
     if (!next || next.id === state.activeDraftId) return;
-    const current = dependencies.activeDraft();
+    let current = dependencies.activeDraft();
     if (current) {
       window.clearTimeout(state.workingSaveTimers.get(current.id));
       state.workingSaveTimers.delete(current.id);
-      if (workingItemText(current).trim()) await persistWorkingItem(current);
-      else {
-        await workingItemRepository.remove(current.id);
-        state.workingItems = state.workingItems.filter((item) => item.id !== current.id);
+      if (workingItemText(current).trim()) {
+        await persistWorkingItem(current);
+      } else {
+        const emptyDraftId = current.id;
+        await workingItemRepository.remove(emptyDraftId);
+        state.workingItems = state.workingItems.filter((item) => item.id !== emptyDraftId);
+        current = null;
       }
     }
+    // 当前编辑内容入栈，选中的草稿移到栈顶（进入编辑框）。
+    const remaining = state.workingItems.filter((item) => item.id !== next.id && item.id !== current?.id);
+    state.workingItems = current ? [next, current, ...remaining] : [next, ...remaining];
     state.activeDraftId = next.id;
     state.composerFullscreen = false;
     dependencies.renderApp();
-    dependencies.root.querySelector<HTMLTextAreaElement>('textarea[name="message"]')?.focus();
+    const input = setComposerText(workingItemText(next));
+    input?.focus();
+    input?.setSelectionRange(input.value.length, input.value.length);
   }
 
   async function ensureActiveDraft() {

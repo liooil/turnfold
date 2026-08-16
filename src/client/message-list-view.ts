@@ -17,6 +17,13 @@ type MessageListDependencies = {
 };
 
 export function createMessageListView(state: AppState, dependencies: MessageListDependencies) {
+  function updateScrollButton() {
+    const viewport = dependencies.root.querySelector<HTMLElement>("#thread-viewport");
+    const button = dependencies.root.querySelector<HTMLButtonElement>(".scroll-button");
+    if (!viewport || !button) return;
+    button.disabled = isViewportAtBottom(viewport);
+  }
+
   function renderMessages(scroll = false) {
     const list = dependencies.root.querySelector<HTMLElement>("#message-list");
     if (!list) {
@@ -84,6 +91,7 @@ export function createMessageListView(state: AppState, dependencies: MessageList
       if (wasAtBottom) scrollBottom(dependencies.root);
       else if (viewport) viewport.scrollTop = previousScrollTop;
     }
+    updateScrollButton();
   }
 
   function renderedMessageNode(message: StoredChatMessage, index: number): HTMLElement | null {
@@ -228,7 +236,7 @@ export function createMessageListView(state: AppState, dependencies: MessageList
     }
     let stopButton = composer?.querySelector<HTMLButtonElement>(".stop-button") || null;
     if (state.streaming && composer && composerActions && !stopButton) {
-      composerActions.insertAdjacentHTML("afterbegin", `<button class="stop-button" type="button" data-action="stop" aria-label="停止生成">${dependencies.icons.stop}</button>`);
+      composerActions.insertAdjacentHTML("afterbegin", `<button class="stop-button" type="button" data-action="stop" aria-label="停止生成" title="停止生成">${dependencies.icons.stop}</button>`);
       stopButton = composer.querySelector<HTMLButtonElement>(".stop-button");
     }
     if (!state.streaming) stopButton?.remove();
@@ -277,5 +285,8 @@ export function createMessageListView(state: AppState, dependencies: MessageList
     });
   }
 
-  return {renderMessages, scheduleMessagesRender, updateStreamingControls};
+  dependencies.root.addEventListener("scroll", updateScrollButton, true);
+  window.addEventListener("resize", updateScrollButton);
+
+  return {renderMessages, scheduleMessagesRender, updateStreamingControls, updateScrollButton};
 }

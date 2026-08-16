@@ -46,7 +46,7 @@ export function createModelSelection(state: AppState, escapeHtml: (value: unknow
     const active = choice.provider.id === state.providerId && choice.model.id === state.model;
     const displayName = compactModelName(choice.model.name || choice.model.id);
     const detail = displayName === choice.model.id ? choice.provider.name : `${choice.model.id} · ${choice.provider.name}`;
-    return `<button class="model-option${active ? " active" : ""}" type="button" data-action="choose-model" data-provider="${escapeHtml(choice.provider.id)}" data-model="${escapeHtml(choice.model.id)}"><span><strong>${escapeHtml(displayName)}</strong><small title="${escapeHtml(choice.model.id)}">${escapeHtml(detail)}</small></span><small>${escapeHtml(providerProtocolLabel(choice.provider.protocol))}</small></button>`;
+    return `<button class="model-option${active ? " active" : ""}" type="button" data-action="choose-model" data-provider="${escapeHtml(choice.provider.id)}" data-model="${escapeHtml(choice.model.id)}" title="选择模型：${escapeHtml(displayName)}"><span><strong>${escapeHtml(displayName)}</strong><small title="${escapeHtml(choice.model.id)}">${escapeHtml(detail)}</small></span><small>${escapeHtml(providerProtocolLabel(choice.provider.protocol))}</small></button>`;
   }
 
   function quickModelChoices(choices: ModelChoice[]) {
@@ -63,11 +63,11 @@ export function createModelSelection(state: AppState, escapeHtml: (value: unknow
 
   function renderModelPicker() {
     const active = state.config?.providers.find((item) => item.id === state.providerId);
-    if (!active || !state.config) return `<button class="model-picker-empty" type="button" data-action="open-provider-settings">${state.config?.providers.length ? "选择 Provider" : "配置 Provider"}</button>`;
+    if (!active || !state.config) return `<button class="model-picker-empty" type="button" data-action="open-provider-settings" title="打开 Provider 设置">${state.config?.providers.length ? "选择 Provider" : "配置 Provider"}</button>`;
     const choices = quickModelChoices(availableModelChoices());
-    if (!choices.length) return '<button class="model-picker-empty" type="button" data-action="open-provider-settings">配置模型</button>';
+    if (!choices.length) return '<button class="model-picker-empty" type="button" data-action="open-provider-settings" title="配置模型">配置模型</button>';
     const activeModelName = compactModelName(active.models.find((model) => model.id === state.model)?.name || state.model || "选择模型");
-    return `<details class="model-picker"><summary aria-label="模型和 Effort"><span class="picker-label">${escapeHtml(activeModelName)}</span><span class="picker-icons"><i class="picker-chevron">${icons.down}</i></span></summary><div class="model-menu"><section class="quick-models"><div class="quick-config-heading"><strong>模型</strong><small>当前与最近使用</small></div><div class="quick-model-list">${choices.map(renderModelOption).join("")}</div></section>${renderEffortControl("quick-effort")}<button class="open-settings-button" type="button" data-action="open-settings">${icons.settings}<span><strong>打开全部设置</strong><small>模型、生成参数与 Provider</small></span></button></div></details>`;
+    return `<details class="model-picker" data-popup><summary aria-label="模型和 Effort" title="选择模型和 Effort"><span class="picker-label">${escapeHtml(activeModelName)}</span><span class="picker-icons"><i class="picker-chevron">${icons.down}</i></span></summary><div class="model-menu"><section class="quick-models"><div class="quick-config-heading"><strong>模型</strong><small>当前与最近使用</small></div><div class="quick-model-list">${choices.map(renderModelOption).join("")}</div></section>${renderEffortControl("quick-effort")}<button class="open-settings-button" type="button" data-action="open-settings" title="打开设置">${icons.settings}<span>设置</span></button></div></details>`;
   }
 
   return {availableModelChoices, rememberModel, renderEffortControl, renderModelOption, renderModelPicker, settingsForProvider};

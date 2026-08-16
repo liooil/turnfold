@@ -304,8 +304,8 @@ export function createGenerationController(state: AppState, dependencies: Genera
     if (state.streaming || !state.conversation) return;
     const visible = dependencies.displayedMessages();
     const message = visible[index];
-    if (!message || message.role !== "assistant") return;
-    const base = visible.slice(0, index);
+    if (!message || (message.role !== "user" && message.role !== "assistant")) return;
+    const base = message.role === "user" ? visible.slice(0, index + 1) : visible.slice(0, index);
     if (!base.some((item) => item.role === "user")) return;
     const baseHead = base.at(-1)?.id || null;
     state.messageGraph = [...dependencies.knownMessageMap().values()];
