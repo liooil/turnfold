@@ -204,7 +204,7 @@
 .history-transfer > summary::-webkit-details-marker { display: none; }
 .history-transfer > summary:hover, .history-transfer[open] > summary { background: var(--soft); }
 .history-transfer-menu { position: absolute; z-index: 45; top: 36px; right: -65px; display: grid; width: 248px; gap: 2px; border: 1px solid var(--line); border-radius: 12px; padding: 7px; background: var(--panel); box-shadow: 0 14px 36px rgba(0,0,0,.14); }
-.history-transfer-menu button { display: grid; width: 100%; height: auto; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; align-items: center; padding: 8px; text-align: left; }
+.history-transfer-menu button { display: grid; width: 100%; height: auto; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; place-items: center stretch; padding: 8px; text-align: left; }
 .history-transfer-menu button > span:last-child { min-width: 0; }
 .history-transfer-menu strong, .history-transfer-menu small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-transfer-menu strong { font-size: 11px; }
