@@ -170,6 +170,8 @@ export function createSessionTransferController(state: AppState, dependencies: D
     let imported = 0;
     const formats = new Set<SessionTransferFormat>();
     const failures: string[] = [];
+    const skippedFiles: string[] = [];
+    let skippedLines = 0;
     const reservedNames = new Set(state.conversations.map((item) => item.name));
     let firstConversationId = "";
     for (const [index, candidate] of candidates.entries()) {
@@ -179,6 +181,11 @@ export function createSessionTransferController(state: AppState, dependencies: D
       try {
         const document = parseSessionTransfer(await candidate.file.text(), candidate.file.name);
         formats.add(document.format);
+        if (document.skippedReason) {
+          skippedFiles.push(`${candidate.source}：${document.skippedReason}`);
+          continue;
+        }
+        skippedLines += document.skippedLines || 0;
         const conversations = await importTransferDocument(document, reservedNames, candidate.source, imported + 1);
         imported += conversations.length;
         firstConversationId ||= conversations[0]?.id || "";
@@ -192,7 +199,12 @@ export function createSessionTransferController(state: AppState, dependencies: D
       if (firstConversationId) await dependencies.selectConversation(firstConversationId);
       if (imported) dependencies.scheduleSync();
       const formatLabel = formats.size ? ` · ${[...formats].join(" / ")}` : "";
-      state.importStatus = `已导入 ${imported} 个会话${formatLabel}${failures.length ? `；跳过 ${failures.length} 个无法识别的文件` : ""}`;
+      const notes = [
+        ...(skippedLines ? [`跳过 ${skippedLines} 行损坏的 JSON`] : []),
+        ...(skippedFiles.length ? [`跳过 ${skippedFiles.length} 个子会话`] : []),
+        ...(failures.length ? [`跳过 ${failures.length} 个无法识别的文件`] : [])
+      ];
+      state.importStatus = `已导入 ${imported} 个会话${formatLabel}${notes.length ? `；${notes.join("，")}` : ""}`;
       if (failures.length) state.importStatus += `\n${failures.slice(0, 3).join("\n")}${failures.length > 3 ? `\n另有 ${failures.length - 3} 个…` : ""}`;
     } catch (error) {
       state.importStatus = `导入在保存阶段中断：${error instanceof Error ? error.message : "未知错误"}`;

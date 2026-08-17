@@ -21,6 +21,23 @@ export type MessageCompletion = {
   reason?: "stop" | "user-cancelled" | "connection-lost" | "provider-error" | "timeout";
 };
 
+// 从外部会话 JSONL（Codex / Claude Code / OMP）导入时提取的用量信息。
+// 字段全部可选：来源格式没有的维度就不出现。
+export type ImportedMessageUsage = {
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  totalTokens?: number;
+  stopReason?: string;
+};
+
+export type ImportedMessageMetadata = {
+  sourceFormat: "codex" | "claude" | "omp";
+  usage?: ImportedMessageUsage;
+};
+
 export type StoredChatMessage = {
   id: string;
   parentMessageId: string | null;
@@ -30,7 +47,7 @@ export type StoredChatMessage = {
   completion: MessageCompletion;
   createdAt: string;
   completedAt: string;
-  metadata?: {custom?: {response?: ResponseMetadata}};
+  metadata?: {custom?: {response?: ResponseMetadata; imported?: ImportedMessageMetadata}};
 };
 
 export type ConversationSummary = {

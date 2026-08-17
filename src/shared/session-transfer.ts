@@ -31,6 +31,10 @@ export type TransferDocument = {
   sessions: TransferSession[];
   nodes: TransferNode[];
   workingItems?: WorkingItem[];
+  /** JSONL 中无法解析而被跳过的行数（容错统计，不影响其余行）。 */
+  skippedLines?: number;
+  /** 整个文件被主动跳过时的原因（例如 Codex 子 agent 会话）。 */
+  skippedReason?: string;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -53,17 +57,56 @@ function isoTimestamp(value: unknown, fallback = new Date().toISOString()) {
 }
 
 function jsonLines(text: string) {
-  const values: JsonRecord[] = [];
-  for (const [index, line] of text.split(/\r?\n/).entries()) {
-    if (!line.trim()) continue;
+  const records: JsonRecord[] = [];
+  let skipped = 0;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
     try {
       const value: unknown = JSON.parse(line);
-      if (isRecord(value)) values.push(value);
+      if (isRecord(value)) records.push(value);
+      else skipped += 1;
     } catch {
-      throw new Error(`JSONL 第 ${index + 1} 行无法解析`);
+      // 容忍损坏/截断的行（例如正在写入的会话文件），统计后跳过，
+      // 而不是让整个文件导入失败。
+      skipped += 1;
     }
   }
-  return values;
+  return {records, skipped};
+}
+
+function usageTokens(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.round(value));
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Math.max(0, Math.round(Number(value)));
+  return null;
+}
+
+function importedUsageMetadata(sourceFormat: "codex" | "claude" | "omp", model: unknown, stopReason: unknown, usage: unknown): StoredChatMessage["metadata"] | undefined {
+  const usageRecord = isRecord(usage) ? usage : null;
+  const read = (...keys: string[]) => {
+    if (!usageRecord) return null;
+    for (const key of keys) {
+      const value = usageTokens(usageRecord[key]);
+      if (value !== null) return value;
+    }
+    return null;
+  };
+  const inputTokens = read("input_tokens", "input");
+  const outputTokens = read("output_tokens", "output");
+  const cacheReadTokens = read("cache_read_input_tokens", "cache_read_tokens", "cacheRead");
+  const cacheCreationTokens = read("cache_creation_input_tokens", "cache_creation_tokens", "cacheWrite");
+  const totalTokens = read("total_tokens", "totalTokens");
+  const usageFields = {
+    ...(typeof model === "string" && model ? {model} : {}),
+    ...(inputTokens !== null ? {inputTokens} : {}),
+    ...(outputTokens !== null ? {outputTokens} : {}),
+    ...(cacheReadTokens !== null ? {cacheReadTokens} : {}),
+    ...(cacheCreationTokens !== null ? {cacheCreationTokens} : {}),
+    ...(totalTokens !== null ? {totalTokens} : {}),
+    ...(typeof stopReason === "string" && stopReason ? {stopReason} : {})
+  };
+  if (!Object.keys(usageFields).length) return undefined;
+  return {custom: {imported: {sourceFormat, usage: usageFields}}};
 }
 
 function contentParts(value: unknown, textTypes = ["text", "input_text", "output_text"]): StoredChatMessage["parts"] {
@@ -72,19 +115,125 @@ function contentParts(value: unknown, textTypes = ["text", "input_text", "output
   const parts: StoredChatMessage["parts"] = [];
   for (const candidate of value) {
     if (!isRecord(candidate)) continue;
-    if (textTypes.includes(stringValue(candidate.type)) && typeof candidate.text === "string") {
+    const type = stringValue(candidate.type);
+    if (textTypes.includes(type) && typeof candidate.text === "string") {
       parts.push({type: "text", text: candidate.text});
-    } else if (candidate.type === "thinking" && typeof candidate.thinking === "string") {
+    } else if (type === "thinking" && typeof candidate.thinking === "string") {
       parts.push({type: "reasoning", text: candidate.thinking, ...(typeof candidate.signature === "string" ? {signature: candidate.signature} : {})});
-    } else if (candidate.type === "image" && isRecord(candidate.source)) {
-      const data = stringValue(candidate.source.data);
+    } else if (type === "redacted_thinking") {
+      // Anthropic 加密思考块：内容不可读，仅保留密文供存档
+      parts.push({
+        type: "redacted-thinking",
+        ...(typeof candidate.data === "string" ? {data: candidate.data} : {}),
+        ...(typeof candidate.ciphertext === "string" ? {ciphertext: candidate.ciphertext} : {}),
+        ...(typeof candidate.signature === "string" ? {signature: candidate.signature} : {})
+      });
+    } else if (type === "refusal") {
+      parts.push({type: "refusal", ...(typeof candidate.text === "string" ? {text: candidate.text} : {})});
+    } else if (type === "image" && isRecord(candidate.source)) {
       const mediaType = stringValue(candidate.source.media_type);
-      if (data && mediaType) parts.push({type: "image", data, mimeType: mediaType});
-    } else if (candidate.type === "input_image" && typeof candidate.image_url === "string") {
+      if (typeof candidate.source.data === "string" && candidate.source.data && mediaType) {
+        parts.push({type: "image", data: candidate.source.data, mimeType: mediaType});
+      } else if (typeof candidate.source.url === "string" && candidate.source.url) {
+        parts.push({type: "image-url", url: candidate.source.url, ...(mediaType ? {mimeType: mediaType} : {})});
+      }
+    } else if (type === "input_image" && typeof candidate.image_url === "string") {
       parts.push({type: "image-url", url: candidate.image_url, ...(typeof candidate.detail === "string" ? {detail: candidate.detail} : {})});
+    } else if (["server_tool_use", "computer_tool_use", "web_search_tool_use"].includes(type)) {
+      // Anthropic 服务端工具块，形状与 tool_use 相同
+      parts.push({
+        type: "tool-call",
+        id: stringValue(candidate.id),
+        name: stringValue(candidate.name, type === "web_search_tool_use" ? "web_search" : type === "computer_tool_use" ? "computer" : "server"),
+        arguments: isRecord(candidate.input) ? candidate.input : {}
+      });
+    } else if (type === "document" && isRecord(candidate.source)) {
+      const name = typeof candidate.title === "string" ? candidate.title : undefined;
+      const mimeType = stringValue(candidate.source.media_type);
+      if (typeof candidate.source.data === "string" && candidate.source.data) {
+        parts.push({type: "file", ...(name ? {name} : {}), ...(mimeType ? {mimeType} : {}), data: candidate.source.data});
+      } else if (typeof candidate.source.url === "string" && candidate.source.url) {
+        parts.push({type: "file", ...(name ? {name} : {}), ...(mimeType ? {mimeType} : {}), url: candidate.source.url});
+      }
+    } else if (type === "file" || type === "input_file") {
+      // OpenAI Responses 的文件项：file_data 携带 file_id 或 file_url，内容可能不在本地
+      const fileData = isRecord(candidate.file_data) ? candidate.file_data : null;
+      parts.push({
+        type: "file",
+        ...(typeof candidate.filename === "string" ? {name: candidate.filename} : {}),
+        ...(typeof candidate.file_id === "string" ? {fileId: candidate.file_id} : fileData && typeof fileData.file_id === "string" ? {fileId: fileData.file_id} : {}),
+        ...(fileData && typeof fileData.file_url === "string" ? {url: fileData.file_url} : {}),
+        ...(typeof candidate.status === "string" ? {status: candidate.status} : {})
+      });
+    } else if (type === "input_audio" && isRecord(candidate.input_audio)) {
+      parts.push({
+        type: "audio",
+        ...(typeof candidate.input_audio.data === "string" ? {data: candidate.input_audio.data} : {}),
+        ...(typeof candidate.input_audio.format === "string" ? {format: candidate.input_audio.format} : {})
+      });
+    } else if (type === "output_audio") {
+      parts.push({
+        type: "audio",
+        ...(typeof candidate.id === "string" ? {id: candidate.id} : {}),
+        ...(typeof candidate.data === "string" ? {data: candidate.data} : {}),
+        ...(typeof candidate.transcript === "string" ? {transcript: candidate.transcript} : {})
+      });
+    } else if (type === "web_search_call") {
+      parts.push({type: "web-search-call", ...(typeof candidate.id === "string" ? {id: candidate.id} : {})});
+    } else if (type === "web_search_result") {
+      parts.push({
+        type: "web-search-result",
+        ...(typeof candidate.id === "string" ? {id: candidate.id} : {}),
+        ...(typeof candidate.title === "string" ? {title: candidate.title} : {}),
+        ...(typeof candidate.url === "string" ? {url: candidate.url} : {}),
+        ...(typeof candidate.text === "string" ? {text: candidate.text} : {}),
+        ...(Array.isArray(candidate.content) ? {content: candidate.content.filter((item): item is JsonRecord => isRecord(item))} : {})
+      });
+    } else if (type === "context" && isRecord(candidate.document)) {
+      // Anthropic context management 的 context 块：保留标题与摘录
+      const document = candidate.document;
+      const excerpts = Array.isArray(document.excerpts) ? document.excerpts.filter((item): item is JsonRecord => isRecord(item)) : [];
+      parts.push({
+        type: "context",
+        ...(typeof document.title === "string" ? {title: document.title} : {}),
+        ...(typeof document.citation === "string" ? {citation: document.citation} : {}),
+        ...(excerpts.length ? {excerpts} : {})
+      });
     }
   }
   return parts;
+}
+
+function toolResultText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is JsonRecord => isRecord(item) && typeof item.text === "string")
+      .map((item) => String(item.text))
+      .join("\n");
+  }
+  return "";
+}
+
+// Claude Code 会把过大的工具输出拆成多个同 tool_use_id 的 tool_result 块，
+// 这里按 tool_use_id 合并为一个 tool-result part（内容按行连接）。
+function mergeToolResultBlocks(blocks: JsonRecord[]): Array<{toolCallId: string; content: string; isError: boolean}> {
+  const merged = new Map<string, {toolCallId: string; content: string; isError: boolean}>();
+  const order: string[] = [];
+  for (const block of blocks) {
+    const toolCallId = stringValue(block.tool_use_id);
+    if (!toolCallId) continue;
+    let entry = merged.get(toolCallId);
+    if (!entry) {
+      entry = {toolCallId, content: "", isError: false};
+      merged.set(toolCallId, entry);
+      order.push(toolCallId);
+    }
+    const text = toolResultText(block.content);
+    if (text) entry.content = entry.content ? `${entry.content}\n${text}` : text;
+    if (block.is_error === true) entry.isError = true;
+  }
+  return order.map((toolCallId) => merged.get(toolCallId)!);
 }
 
 function firstText(nodes: TransferNode[]) {
@@ -153,6 +302,10 @@ function parseTurnfold(value: JsonRecord): TransferDocument {
 function parseCodex(records: JsonRecord[]): TransferDocument {
   const metadata = records.find((record) => record.type === "session_meta" && isRecord(record.payload));
   const sessionPayload = metadata && isRecord(metadata.payload) ? metadata.payload : {};
+  // 子 agent 会话（source.subagent）不导入为独立会话（对应 cc-switch 的过滤策略）
+  if (isRecord(sessionPayload.source) && sessionPayload.source.subagent !== undefined) {
+    return {format: "codex", sessions: [], nodes: [], skippedReason: "Codex 子 agent 会话，已跳过"};
+  }
   const sessionId = stringValue(sessionPayload.id, crypto.randomUUID());
   let model = "codex";
   let name = "";
@@ -167,12 +320,15 @@ function parseCodex(records: JsonRecord[]): TransferDocument {
     if (record.payload.role === "user") canonicalUserText.add(text);
     if (record.payload.role === "assistant") canonicalAssistantText.add(text);
   }
-  const pushNode = (role: StoredChatMessage["role"], parts: StoredChatMessage["parts"], timestamp: string) => {
+  const pushNode = (role: StoredChatMessage["role"], parts: StoredChatMessage["parts"], timestamp: string, metadata?: StoredChatMessage["metadata"]) => {
     if (!parts.length) return;
     const sourceId = `codex-${sessionId}-${++ordinal}`;
-    nodes.push(transferNode(sourceId, parentSourceId, role, parts, timestamp));
+    const node = transferNode(sourceId, parentSourceId, role, parts, timestamp);
+    if (metadata) node.metadata = metadata;
+    nodes.push(node);
     parentSourceId = sourceId;
   };
+  const injectedText = (parts: StoredChatMessage["parts"]) => parts.filter((part) => part.type === "text").map((part) => String(part.text || "")).join("").trim();
   for (const record of records) {
     const timestamp = isoTimestamp(record.timestamp, isoTimestamp(sessionPayload.timestamp));
     if (!isRecord(record.payload)) continue;
@@ -181,11 +337,24 @@ function parseCodex(records: JsonRecord[]): TransferDocument {
     if (record.type === "response_item") {
       if (payload.type === "message" && (payload.role === "user" || payload.role === "assistant")) {
         const parts = contentParts(payload.content);
-        const text = parts.filter((part) => part.type === "text").map((part) => String(part.text || "")).join("").trim();
-        if (payload.role !== "user" || !/^<(environment_context|permissions instructions)>/i.test(text)) pushNode(payload.role, parts, timestamp);
+        const text = injectedText(parts);
+        if (payload.role !== "user" || !/^<(environment_context|permissions instructions)>/i.test(text)) pushNode(payload.role, parts, timestamp, importedUsageMetadata("codex", payload.model, payload.status, payload.usage));
+      } else if (payload.type === "message" && payload.role === "developer") {
+        // Codex 的 developer 消息（AGENTS.md / 权限注入）映射为 system；
+        // 与 user 注入相同的噪音规则过滤，其余内容保留
+        const parts = contentParts(payload.content);
+        const text = injectedText(parts);
+        if (!/^(# AGENTS\.md instructions|<\s*(environment_context|permissions instructions)>)/i.test(text)) pushNode("system", parts, timestamp, importedUsageMetadata("codex", payload.model, payload.status, payload.usage));
       } else if (payload.type === "reasoning") {
-        const parts = [...(Array.isArray(payload.summary) ? payload.summary : []), ...(Array.isArray(payload.content) ? payload.content : [])]
-          .flatMap((item) => isRecord(item) && typeof item.text === "string" ? [{type: "reasoning", text: item.text}] : []);
+        const parts: StoredChatMessage["parts"] = [...(Array.isArray(payload.summary) ? payload.summary : []), ...(Array.isArray(payload.content) ? payload.content : [])]
+          .flatMap((item): StoredChatMessage["parts"] => {
+            if (!isRecord(item)) return [];
+            if (typeof item.text === "string") return [{type: "reasoning", text: item.text}];
+            if (item.type === "encrypted_content") {
+              return [{type: "redacted-thinking", ...(typeof item.data === "string" ? {data: item.data} : {}), ...(typeof item.ciphertext === "string" ? {ciphertext: item.ciphertext} : {})}];
+            }
+            return [];
+          });
         pushNode("assistant", parts, timestamp);
       } else if (["function_call", "custom_tool_call", "web_search_call", "tool_search_call"].includes(String(payload.type))) {
         const callId = stringValue(payload.call_id, stringValue(payload.id, `call-${ordinal + 1}`));
@@ -197,6 +366,19 @@ function parseCodex(records: JsonRecord[]): TransferDocument {
         pushNode("assistant", [{type: "tool-call", id: callId, name: toolName, arguments: isRecord(argumentsValue) ? argumentsValue : {}}], timestamp);
       } else if (["function_call_output", "custom_tool_call_output", "tool_search_output"].includes(String(payload.type))) {
         pushNode("assistant", [{type: "tool-result", toolCallId: stringValue(payload.call_id), content: payload.output ?? payload.tools, isError: payload.status === "failed"}], timestamp);
+      } else if (payload.type === "local_shell_call") {
+        pushNode("assistant", [{type: "tool-call", id: stringValue(payload.call_id, `call-${ordinal + 1}`), name: "local_shell", arguments: {argv: Array.isArray(payload.argv) ? payload.argv : [], ...(typeof payload.cwd === "string" ? {cwd: payload.cwd} : {})}}], timestamp);
+      } else if (payload.type === "local_shell_call_output") {
+        const output = typeof payload.output === "string" ? payload.output : typeof payload.stdout === "string" ? payload.stdout : typeof payload.stderr === "string" ? payload.stderr : "";
+        pushNode("assistant", [{type: "tool-result", toolCallId: stringValue(payload.call_id), content: output, isError: payload.exit_code !== 0 || payload.timed_out === true}], timestamp);
+      } else if (payload.type === "web_search_result") {
+        const title = typeof payload.title === "string" ? payload.title : "";
+        const body = (Array.isArray(payload.content) ? payload.content : [])
+          .filter((item): item is JsonRecord => isRecord(item))
+          .map((item) => [stringValue(item.title), stringValue(item.content)].filter(Boolean).join("\n"))
+          .filter(Boolean)
+          .join("\n\n");
+        pushNode("assistant", [{type: "tool-result", toolCallId: stringValue(payload.call_id), content: [title, body].filter(Boolean).join("\n\n"), isError: false}], timestamp);
       }
     } else if (record.type === "event_msg") {
       if (payload.type === "thread_name_updated" && typeof payload.thread_name === "string") name = payload.thread_name;
@@ -232,16 +414,26 @@ function parseClaude(records: JsonRecord[]): TransferDocument {
   let sessionId = "";
   let name = "";
   let model = "claude";
+  const seenMessageNodes = new Map<string, TransferNode>();
   for (const [index, record] of records.entries()) {
     sessionId ||= stringValue(record.sessionId);
     if (record.type === "custom-title") name = stringValue(record.customTitle, name);
     if (record.type === "ai-title" && !name) name = stringValue(record.aiTitle, name);
+    if (record.type === "summary" && typeof record.summary === "string" && record.summary.trim()) {
+      // /compact 压缩摘要：作为 system 节点插入压缩点，后续消息通过
+      // nearestRetainedParent 继续链接到它，保留续聊结构
+      const sourceUuid = stringValue(record.uuid, `claude-summary-${index + 1}`);
+      nodes.push(transferNode(sourceUuid, nearestRetainedParent(typeof record.parentUuid === "string" ? record.parentUuid : null, sourceParents, retained), "system", [{type: "summary", text: record.summary}], isoTimestamp(record.timestamp)));
+      retained.set(sourceUuid, sourceUuid);
+      continue;
+    }
     if ((record.type !== "user" && record.type !== "assistant") || record.isSidechain === true || record.isMeta === true || !isRecord(record.message)) continue;
     const sourceUuid = stringValue(record.uuid, `claude-line-${index + 1}`);
     let parentSourceId = nearestRetainedParent(typeof record.parentUuid === "string" ? record.parentUuid : null, sourceParents, retained);
     const timestamp = isoTimestamp(record.timestamp);
     const converted: TransferNode[] = [];
     if (record.type === "assistant") {
+      const messageId = typeof record.message.id === "string" ? record.message.id : null;
       model = stringValue(record.message.model, model);
       const parts = contentParts(record.message.content);
       if (Array.isArray(record.message.content)) {
@@ -250,13 +442,28 @@ function parseClaude(records: JsonRecord[]): TransferDocument {
           parts.push({type: "tool-call", id: stringValue(block.id), name: stringValue(block.name, "unknown"), arguments: isRecord(block.input) ? block.input : {}});
         }
       }
-      if (parts.length) converted.push(transferNode(sourceUuid, parentSourceId, "assistant", parts, timestamp));
+      const metadata = importedUsageMetadata("claude", record.message.model, record.message.stop_reason, record.message.usage);
+      if (messageId) {
+        const existing = seenMessageNodes.get(messageId);
+        if (existing) {
+          // 同一 message.id 的后续行是流式重写的完整快照（cc-switch 同样按
+          // message.id 去重）：更新已建节点的内容与完成时间，保留最后一行
+          existing.parts = parts;
+          existing.completedAt = timestamp;
+          if (metadata) existing.metadata = metadata;
+          continue;
+        }
+      }
+      if (parts.length) {
+        const node = transferNode(sourceUuid, parentSourceId, "assistant", parts, timestamp, {metadata});
+        if (messageId) seenMessageNodes.set(messageId, node);
+        converted.push(node);
+      }
     } else {
-      const toolResults = Array.isArray(record.message.content) ? record.message.content.filter((block) => isRecord(block) && block.type === "tool_result") : [];
+      const toolResults = Array.isArray(record.message.content) ? record.message.content.filter((block): block is JsonRecord => isRecord(block) && ["tool_result", "server_tool_result", "computer_tool_result", "web_search_tool_result"].includes(String(block.type))) : [];
       if (toolResults.length) {
-        for (const block of toolResults) {
-          if (!isRecord(block)) continue;
-          converted.push(transferNode(`${sourceUuid}-tool-result-${converted.length}`, parentSourceId, "assistant", [{type: "tool-result", toolCallId: stringValue(block.tool_use_id), content: block.content, isError: block.is_error === true}], timestamp));
+        for (const result of mergeToolResultBlocks(toolResults)) {
+          converted.push(transferNode(`${sourceUuid}-tool-result-${converted.length}`, parentSourceId, "assistant", [{type: "tool-result", toolCallId: result.toolCallId, content: result.content, isError: result.isError}], timestamp));
           parentSourceId = converted.at(-1)!.sourceId;
         }
       } else {
@@ -304,7 +511,7 @@ function parseOmp(records: JsonRecord[]): TransferDocument {
     if (role === "toolResult") parts = [{type: "tool-result", toolCallId: stringValue(record.message.toolCallId), toolName: stringValue(record.message.toolName, "unknown"), content: record.message.content, isError: record.message.isError === true}];
     else parts = ompMessageParts(record.message);
     if (!parts.length || (role !== "user" && role !== "assistant" && role !== "toolResult")) continue;
-    nodes.push(transferNode(record.id, parentSourceId, role === "toolResult" ? "assistant" : role, parts, timestamp));
+    nodes.push(transferNode(record.id, parentSourceId, role === "toolResult" ? "assistant" : role, parts, timestamp, {metadata: importedUsageMetadata("omp", record.message.model, record.message.stopReason, record.message.usage)}));
     retained.set(record.id, record.id);
   }
   const createdAt = isoTimestamp(header.timestamp, nodes[0]?.createdAt);
@@ -316,15 +523,23 @@ function parseOmp(records: JsonRecord[]): TransferDocument {
 export function detectSessionTransferFormat(text: string, filename = ""): SessionTransferFormat {
   const trimmed = text.trimStart();
   if (trimmed.startsWith("{")) {
-    try {
-      const firstLine = JSON.parse(trimmed.split(/\r?\n/, 1)[0]) as unknown;
-      if (isRecord(firstLine)) {
-        if (firstLine.type === "turnfold-archive") return "turnfold";
-        if (firstLine.type === "session_meta") return "codex";
-        if (firstLine.type === "session" || firstLine.type === "title") return "omp";
-        if (typeof firstLine.sessionId === "string" || typeof firstLine.uuid === "string" || ["user", "assistant", "custom-title", "ai-title"].includes(String(firstLine.type))) return "claude";
+    // 扫描前若干行而不是只看第一行：Claude Code 文件可能以
+    // file-history-snapshot / system / summary 等元记录开头
+    const headLines = trimmed.split(/\r?\n/, 12);
+    for (const headLine of headLines) {
+      if (!headLine.trim()) continue;
+      let firstLine: unknown;
+      try {
+        firstLine = JSON.parse(headLine);
+      } catch {
+        continue;
       }
-    } catch {}
+      if (!isRecord(firstLine)) continue;
+      if (firstLine.type === "turnfold-archive") return "turnfold";
+      if (firstLine.type === "session_meta") return "codex";
+      if (firstLine.type === "session" || firstLine.type === "title") return "omp";
+      if (typeof firstLine.sessionId === "string" || typeof firstLine.uuid === "string" || ["user", "assistant", "custom-title", "ai-title", "system", "summary", "file-history-snapshot"].includes(String(firstLine.type))) return "claude";
+    }
   }
   const lower = filename.toLowerCase();
   if (lower.endsWith(".turnfold.json")) return "turnfold";
@@ -338,10 +553,10 @@ export function parseSessionTransfer(text: string, filename = ""): TransferDocum
     if (!isRecord(value)) throw new Error("Turnfold 备份不是 JSON 对象");
     return parseTurnfold(value);
   }
-  const records = jsonLines(text);
-  if (format === "codex") return parseCodex(records);
-  if (format === "claude") return parseClaude(records);
-  return parseOmp(records);
+  const {records, skipped} = jsonLines(text);
+  if (format === "codex") return {...parseCodex(records), skippedLines: skipped};
+  if (format === "claude") return {...parseClaude(records), skippedLines: skipped};
+  return {...parseOmp(records), skippedLines: skipped};
 }
 
 function nodeTextParts(node: TransferNode) {
