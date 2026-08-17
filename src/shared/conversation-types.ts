@@ -4,6 +4,7 @@ export type ResponseMetadata = {
   providerId: string;
   model: string;
   durationMs: number;
+  timeToFirstTokenMs?: number | null;
   outputTokens: number | null;
   tokensPerSecond: number | null;
 };

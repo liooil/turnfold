@@ -15,12 +15,18 @@ export function responseMetadata(
   model: string,
   startedAt: number,
   outputTokens: number | undefined | null,
-  fallbackOutputTokens?: number | undefined | null
+  fallbackOutputTokens?: number | undefined | null,
+  firstTokenAt?: number | null
 ): ResponseMetadata {
-  const durationMs = Math.max(1, Math.round(performance.now() - startedAt));
+  const finishedAt = performance.now();
+  const durationMs = Math.max(1, Math.round(finishedAt - startedAt));
+  const timeToFirstTokenMs = typeof firstTokenAt === "number"
+    ? Math.max(0, Math.min(durationMs, Math.round(firstTokenAt - startedAt)))
+    : null;
   const normalizedTokens = normalizeTokenCount(outputTokens) ?? normalizeTokenCount(fallbackOutputTokens);
+  const streamDurationMs = Math.max(1, durationMs - (timeToFirstTokenMs ?? 0));
   const tokensPerSecond = normalizedTokens === null
     ? null
-    : Math.round((normalizedTokens / (durationMs / 1000)) * 10) / 10;
-  return {providerId, model, durationMs, outputTokens: normalizedTokens, tokensPerSecond};
+    : Math.round((normalizedTokens / (streamDurationMs / 1000)) * 10) / 10;
+  return {providerId, model, durationMs, timeToFirstTokenMs, outputTokens: normalizedTokens, tokensPerSecond};
 }

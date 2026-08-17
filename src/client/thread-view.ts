@@ -1,4 +1,4 @@
-import type {StoredChatMessage, WorkingItem} from "../shared/conversation-types";
+import type {ResponseMetadata, StoredChatMessage, WorkingItem} from "../shared/conversation-types";
 import type {AppState} from "./app-state";
 import {configuredResponseModel} from "./app-selectors";
 import {messagePartText} from "./conversation-selectors";
@@ -7,6 +7,28 @@ import {escapeHtml} from "./html";
 import {finishingMarkdownMessages} from "./markdown-renderer";
 
 type IconSet = typeof import("./icons").icons;
+
+function formatResponseDuration(durationMs: number | null | undefined) {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) return "—";
+  if (durationMs < 1000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  const totalSeconds = Math.round(durationMs / 1000);
+  if (totalSeconds < 60) return `${(durationMs / 1000).toFixed(1)}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const seconds = totalSeconds % 60;
+    return seconds ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function responseTimingTitle(response: ResponseMetadata | undefined) {
+  if (!response) return "历史回复未记录响应时间";
+  const firstToken = typeof response.timeToFirstTokenMs === "number" ? formatResponseDuration(response.timeToFirstTokenMs) : "未记录";
+  const stream = typeof response.tokensPerSecond === "number" ? `${response.tokensPerSecond.toFixed(1)} tok/s` : "未记录";
+  return `首个 token ${firstToken} · 后续 stream ${stream}`;
+}
 
 type ThreadDependencies = {
   icons: IconSet;
@@ -84,11 +106,12 @@ export function createThreadView(state: AppState, dependencies: ThreadDependenci
     const renderedText = text ? dependencies.renderMarkdownContainer(text, message.id, !streamed || finishingMarkdownMessages.has(message.id)) : null;
     const error = message.parts.find((part) => part.type === "error" && typeof part.text === "string")?.text;
     const response = message.metadata?.custom?.response;
-    const modelLabel = response?.model ? `${response.providerId || state.providerId}/${response.model}` : `${state.providerId}/${state.model}`;
-    const speed = typeof response?.tokensPerSecond === "number" ? `${response.tokensPerSecond.toFixed(1)} tok/s` : "速度 —";
-    const detail = response?.durationMs ? `${(response.durationMs / 1000).toFixed(1)} 秒${typeof response.outputTokens === "number" ? ` · ${response.outputTokens} tokens` : ""}` : "历史回复未记录速度";
+    const modelLabel = response?.model || state.model || "未知模型";
+    const modelDetail = `${response?.providerId || state.providerId || "未知 Provider"}/${modelLabel}`;
+    const duration = typeof response?.durationMs === "number" ? formatResponseDuration(response.durationMs) : "—";
+    const timingDetail = responseTimingTitle(response);
     const partial = message.completion.status === "partial" ? `<span class="partial-badge">未完成${message.completion.reason ? ` · ${escapeHtml(message.completion.reason)}` : ""}</span>` : "";
-    return `<article class="message assistant-message${replyTarget ? " reply-target" : ""}" ${messageAttributes}><div class="message-content assistant-content">${reasoning ? `<details class="message-reasoning"><summary>思考过程</summary><div>${escapeHtml(reasoning)}</div></details>` : ""}${renderedText || streamed ? renderedText || '<span class="response-loader"></span>' : ""}${error ? `<div class="message-error">${escapeHtml(error)}</div>` : ""}</div><div class="message-footer"><div class="response-summary"><div class="response-meta" title="${escapeHtml(detail)}"><span>${escapeHtml(modelLabel)}</span><span>${escapeHtml(speed)}</span></div>${partial}</div><div class="message-actions">${branches}${replyAction(message, index)}<button class="icon-button" type="button" data-action="copy-message" data-index="${index}" aria-label="复制回答" title="复制回答">${dependencies.icons.copy}</button>${state.advancedActions ? `<button class="icon-button" type="button" data-action="edit-message" data-index="${index}" aria-label="编辑回答" title="编辑回答"${state.streaming ? " disabled" : ""}>${dependencies.icons.edit}</button>` : ""}<button class="icon-button" type="button" data-action="regenerate-message" data-index="${index}" aria-label="重新生成回答" title="重新生成回答"${state.streaming ? " disabled" : ""}>${dependencies.icons.regenerate}</button></div></div></article>`;
+    return `<article class="message assistant-message${replyTarget ? " reply-target" : ""}" ${messageAttributes}><div class="message-content assistant-content">${reasoning ? `<details class="message-reasoning"><summary>思考过程</summary><div>${escapeHtml(reasoning)}</div></details>` : ""}${renderedText || streamed ? renderedText || '<span class="response-loader"></span>' : ""}${error ? `<div class="message-error">${escapeHtml(error)}</div>` : ""}</div><div class="message-footer"><div class="response-summary"><div class="response-meta"><button class="response-meta-tooltip" type="button" data-tooltip="${escapeHtml(modelDetail)}" aria-label="${escapeHtml(modelDetail)}" aria-expanded="false"><span>${escapeHtml(modelLabel)}</span></button><button class="response-meta-tooltip" type="button" data-tooltip="${escapeHtml(timingDetail)}" aria-label="${escapeHtml(timingDetail)}" aria-expanded="false"><span>${escapeHtml(duration)}</span></button></div>${partial}</div><div class="message-actions">${branches}${replyAction(message, index)}<button class="icon-button" type="button" data-action="copy-message" data-index="${index}" aria-label="复制回答" title="复制回答">${dependencies.icons.copy}</button>${state.advancedActions ? `<button class="icon-button" type="button" data-action="edit-message" data-index="${index}" aria-label="编辑回答" title="编辑回答"${state.streaming ? " disabled" : ""}>${dependencies.icons.edit}</button>` : ""}<button class="icon-button" type="button" data-action="regenerate-message" data-index="${index}" aria-label="重新生成回答" title="重新生成回答"${state.streaming ? " disabled" : ""}>${dependencies.icons.regenerate}</button></div></div></article>`;
   }
 
   function renderBranchNavigator(message: StoredChatMessage) {

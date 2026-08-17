@@ -44,6 +44,7 @@ export function createProviderStreaming(state: AppState) {
     const secret = credential?.secret || {};
     if (item.auth.type !== "none" && !secret.apiKey && !Object.keys(secret.headers || {}).length) throw new Error(`请先配置 ${item.name} 的凭据`);
     const startedAt = performance.now();
+    let firstTokenAt: number | null = null;
     let responseText = "";
     const result = await streamProvider(
       item,
@@ -52,12 +53,13 @@ export function createProviderStreaming(state: AppState) {
       messages.filter((message) => ["system", "user", "assistant"].includes(message.role)).map((message) => ({role: message.role as "system" | "user" | "assistant", text: messagePartText(message, "text")})).filter((message) => message.role !== "system" || message.text),
       context?.generationSettings || state.generationSettings,
       (event) => {
+        if ((event.type === "text-delta" || event.type === "reasoning-delta") && event.text && firstTokenAt === null) firstTokenAt = performance.now();
         if (event.type === "text-delta") responseText += event.text;
         onEvent(event);
       },
       signal
     );
-    onEvent({type: "finish", metadata: responseMetadata(item.id, context?.model || state.model, startedAt, result.outputTokens, result.outputTokens === undefined ? estimateFrontendOutputTokens(responseText) : undefined)});
+    onEvent({type: "finish", metadata: responseMetadata(item.id, context?.model || state.model, startedAt, result.outputTokens, result.outputTokens === undefined ? estimateFrontendOutputTokens(responseText) : undefined, firstTokenAt)});
   }
 
   return {discoverLocalProvider, streamLocalProvider};

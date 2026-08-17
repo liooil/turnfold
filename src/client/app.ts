@@ -71,7 +71,7 @@ function renderApp() {
   const workspace = state.conversation
     ? threadView.renderThread()
     : `<section class="empty-workspace"><div class="welcome-mark">TF</div><h1>开始一个新对话</h1><p>${usableProvider ? "当前模型已就绪，也可以只记录消息而不请求回答。" : "无需配置模型即可记录消息；配置模型后才能勾选“需要回答”。"}</p><button type="button" data-action="new-conversation" title="开始一个新对话">新对话</button></section>`;
-  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史" title="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${identityView.renderIdentitySyncControl(profile)}</div></header>${historyView.renderHistory()}${workspace}${sessionTransferController.renderImportPanel()}${settingsView.renderSettingsPage()}</main>`, appDomReconcileOptions);
+  reconcileHtml(root, `<main class="app-shell with-history${state.historyOpen ? " history-open" : ""}"><header class="app-header"><div class="header-leading"><button class="history-toggle" type="button" data-action="toggle-history" aria-label="聊天历史" title="聊天历史">${icons.history}</button></div><div class="brand"><a class="portal-home-link" href="${escapeHtml(homeUrl)}" aria-label="Turnfold 主页" title="Turnfold"><img src="${appUrl("/favicon.svg")}" alt=""></a></div><div class="chat-controls">${identityView.renderIdentitySyncControl(profile)}</div></header>${state.conversation && !state.historyOpen ? `<button class="immersive-history-toggle" type="button" data-action="toggle-history" aria-label="打开聊天历史" title="打开聊天历史">${icons.history}</button>` : ""}${historyView.renderHistory()}${workspace}${sessionTransferController.renderImportPanel()}${settingsView.renderSettingsPage()}</main>`, appDomReconcileOptions);
   if (state.conversation) messageListView.renderMessages();
   window.requestAnimationFrame(() => composerView.syncComposerInputLayout());
   void updateAvatar(root, profile);
@@ -244,6 +244,15 @@ function closePopupDetails(clickTarget?: Element) {
   });
 }
 
+function closeResponseTooltips(except?: HTMLElement) {
+  root.querySelectorAll<HTMLElement>(".response-meta-tooltip.open").forEach((tooltip) => {
+    if (tooltip === except) return;
+    tooltip.classList.remove("open");
+    tooltip.setAttribute("aria-expanded", "false");
+    if (document.activeElement === tooltip) tooltip.blur();
+  });
+}
+
 root.addEventListener("submit", (event) => {
   if (!(event.target instanceof HTMLFormElement)) return;
   if (providerController.handleSubmit(event.target)) {
@@ -257,6 +266,14 @@ root.addEventListener("submit", (event) => {
 });
 
 root.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    const openTooltip = root.querySelector<HTMLElement>(".response-meta-tooltip.open");
+    if (openTooltip) {
+      closeResponseTooltips();
+      if (event.target instanceof HTMLElement && event.target.matches(".response-meta-tooltip")) event.target.blur();
+      return;
+    }
+  }
   if (event.key === "Escape" && state.settingsOpen) {
     if (providerController.closeTopEditor()) return;
     state.settingsOpen = false;
@@ -281,6 +298,11 @@ root.addEventListener("keydown", (event) => {
     event.preventDefault();
     void generationController.sendMessage(event.target.value).catch(showError);
   }
+});
+
+root.addEventListener("focusin", (event) => {
+  const focusTarget = event.target instanceof Element ? event.target.closest<HTMLElement>(".response-meta-tooltip") : null;
+  closeResponseTooltips(focusTarget || undefined);
 });
 
 root.addEventListener("input", (event) => {
@@ -351,8 +373,17 @@ root.addEventListener("change", (event) => {
 });
 
 root.addEventListener("click", (event) => {
-  closePopupDetails(event.target instanceof Element ? event.target : undefined);
-  const button = (event.target as Element).closest<HTMLElement>("[data-action]");
+  const clickTarget = event.target instanceof Element ? event.target : undefined;
+  closePopupDetails(clickTarget);
+  const tooltip = clickTarget?.closest<HTMLElement>(".response-meta-tooltip") || null;
+  closeResponseTooltips(tooltip || undefined);
+  if (tooltip) {
+    const open = !tooltip.classList.contains("open");
+    tooltip.classList.toggle("open", open);
+    tooltip.setAttribute("aria-expanded", String(open));
+    return;
+  }
+  const button = clickTarget?.closest<HTMLElement>("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
   if (providerController.handleAction(button)) return;

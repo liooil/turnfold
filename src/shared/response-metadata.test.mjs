@@ -11,6 +11,15 @@ describe("response metadata", () => {
     expect(metadata.tokensPerSecond).toBeLessThanOrEqual(21);
   });
 
+  test("calculates stream throughput after the first token", () => {
+    const startedAt = performance.now() - 2000;
+    const metadata = responseMetadata("openai-compatible", "gpt-test", startedAt, 40, undefined, startedAt + 500);
+    expect(metadata.timeToFirstTokenMs).toBeGreaterThanOrEqual(450);
+    expect(metadata.timeToFirstTokenMs).toBeLessThanOrEqual(550);
+    expect(metadata.tokensPerSecond).toBeGreaterThanOrEqual(24);
+    expect(metadata.tokensPerSecond).toBeLessThanOrEqual(30);
+  });
+
   test("keeps speed unavailable when provider omits token usage", () => {
     const metadata = responseMetadata("local", "model", performance.now() - 100, undefined);
     expect(metadata.outputTokens).toBeNull();
