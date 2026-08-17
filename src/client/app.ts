@@ -459,7 +459,26 @@ document.addEventListener("visibilitychange", () => {
   if (draft) void draftActions.persistWorkingItem(draft);
 });
 
-if ("serviceWorker" in navigator) navigator.serviceWorker.register(appUrl("/sw.js?v=9"), {scope: `${basePath}/`}).catch((error) => console.error("Unable to register service worker", error));
+const bunDevServer = Boolean(document.querySelector("script[data-bun-dev-server-script]"));
+if ("serviceWorker" in navigator) {
+  const serviceWorkerScope = new URL(appUrl("/"), window.location.href).href;
+  if (bunDevServer) {
+    void navigator.serviceWorker.getRegistrations().then(async (registrations) => {
+      const appRegistrations = registrations.filter((registration) => registration.scope === serviceWorkerScope);
+      if (!appRegistrations.length) {
+        window.sessionStorage.removeItem("turnfold-dev-sw-cleared");
+        return;
+      }
+      await Promise.all(appRegistrations.map((registration) => registration.unregister()));
+      if (navigator.serviceWorker.controller && !window.sessionStorage.getItem("turnfold-dev-sw-cleared")) {
+        window.sessionStorage.setItem("turnfold-dev-sw-cleared", "1");
+        window.location.reload();
+      }
+    }).catch((error) => console.error("Unable to clear development service worker", error));
+  } else {
+    navigator.serviceWorker.register(appUrl("/sw.js?v=9"), {scope: `${basePath}/`}).catch((error) => console.error("Unable to register service worker", error));
+  }
+}
 
 renderApp();
 bootstrap.initialize().catch((error) => {

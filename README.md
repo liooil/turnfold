@@ -63,7 +63,7 @@ docker compose config
 
 The source dependency direction is `client -> shared <- server`. See [docs/architecture.md](docs/architecture.md) for the module and compatibility boundaries.
 
-`bun run dev` starts Bun's fullstack dev server (`Bun.serve` with `development: true`). It bundles `src/index.html` on demand, enables hot reloading for frontend changes, and prepares public/MathJax assets in `dist/` on startup.
+`bun run dev` starts Bun's fullstack dev server (`Bun.serve` with `development: true`). It serves `src/index.html` through Bun's HTML bundle and public/MathJax assets directly from source dependencies, so frontend changes hot reload without running `build` or `build:pages`.
 
 The development server listens on port `3000` by default. Set `PORT` to override it.
 

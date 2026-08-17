@@ -14,7 +14,11 @@ const mimeTypes: Record<string, string> = {
   ".webp": "image/webp"
 };
 
-export async function staticResponse(pathname: string) {
+export type StaticResponseOptions = {
+  root?: string;
+};
+
+export async function staticResponse(pathname: string, options: StaticResponseOptions = {}) {
   let decoded: string;
   try {
     decoded = decodeURIComponent(pathname);
@@ -22,11 +26,12 @@ export async function staticResponse(pathname: string) {
     return json({error: "Invalid path"}, 400);
   }
   const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
-  let filePath = path.resolve(staticRoot, relative);
-  if (!filePath.startsWith(`${staticRoot}${path.sep}`) && filePath !== path.join(staticRoot, "index.html")) return json({error: "Not found"}, 404);
+  const root = path.resolve(options.root || staticRoot);
+  let filePath = path.resolve(root, relative);
+  if (!filePath.startsWith(`${root}${path.sep}`) && filePath !== path.join(root, "index.html")) return json({error: "Not found"}, 404);
   let file = Bun.file(filePath);
   if (!(await file.exists()) && !path.extname(relative)) {
-    filePath = path.join(staticRoot, "index.html");
+    filePath = path.join(root, "index.html");
     file = Bun.file(filePath);
   }
   if (!(await file.exists())) return json({error: "Not found"}, 404);

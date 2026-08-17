@@ -61,7 +61,7 @@ docker compose config
 
 源码依赖方向固定为 `client -> shared <- server`。模块职责与兼容边界见 [docs/architecture.md](docs/architecture.md)。
 
-`bun run dev` 会启动 Bun 的 fullstack 开发服务器（`Bun.serve` 且 `development: true`）。它会在启动时把 public 和 MathJax 资源准备到 `dist/`，按需打包 `src/index.html`，并为前端改动启用热更新。
+`bun run dev` 会启动 Bun 的 fullstack 开发服务器（`Bun.serve` 且 `development: true`）。它通过 Bun 的 HTML bundle 直接提供 `src/index.html`，并直接读取源码依赖中的 public 和 MathJax 资源，因此前端改动会热更新，不需要运行 `build` 或 `build:pages`。
 
 开发服务器默认监听 `3000` 端口，可通过 `PORT` 修改。
 
