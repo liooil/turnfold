@@ -108,6 +108,12 @@
   .provider-editor > footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .provider-editor > footer button { min-width: 0; width: 100%; padding: 8px 5px; font-size: 10px; text-align: center; }
   .provider-editor-grid input, .provider-editor-grid select, .provider-editor-grid textarea, .provider-setup-field input, .provider-setup-field select { font-size: 16px; }
+  .backend-url-field input, .backend-url-field select { font-size: 16px; }
+  .webdav-credential-fields { grid-template-columns: 1fr; }
+  .backend-connection-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .backend-connection-actions button { width: 100%; text-align: center; }
+  .provider-agent-credential { grid-template-columns: 1fr; }
+  .provider-agent-credential input, .provider-agent-credential select { font-size: 16px; }
   .provider-setup-summary { align-items: flex-start; flex-direction: column; gap: 6px; }
   .provider-setup-summary em { align-self: flex-start; }
   .provider-setup-summary small { overflow-wrap: anywhere; white-space: normal; }

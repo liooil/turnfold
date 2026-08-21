@@ -1,0 +1,37 @@
+[package]
+name = "turnfold"
+version = "0.1.0"
+edition = "2024"
+description = "Local-first runtime for Turnfold"
+license = "MIT"
+repository = "https://github.com/liooil/turnfold"
+
+[dependencies]
+anyhow = "1.0"
+aes-gcm = "0.10"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive", "env"] }
+futures-util = "0.3"
+fs4 = "0.13"
+keyring = "4.1"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "macros"] }
+tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower-http = { version = "0.6", features = ["fs", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webbrowser = "1.0"
+url = "2.5"
+uuid = { version = "1.18", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.23"
+tower = { version = "0.5", features = ["util"] }

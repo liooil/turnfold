@@ -32,4 +32,14 @@ describe("source dependency boundaries", () => {
   test("server code does not depend on client code", () => {
     expect(forbiddenImports("src/server", ["/client/"])).toEqual([]);
   });
+
+  test("loads responsive styles after their component defaults", () => {
+    const source = readFileSync("src/index.html", "utf8");
+    const foundation = source.indexOf("./styles/foundation.css");
+    const components = source.indexOf("./styles/components.css");
+    const responsive = source.indexOf("./styles/responsive.css");
+    expect(foundation).toBeGreaterThan(-1);
+    expect(components).toBeGreaterThan(foundation);
+    expect(responsive).toBeGreaterThan(components);
+  });
 });

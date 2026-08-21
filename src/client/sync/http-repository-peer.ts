@@ -8,7 +8,12 @@ export class RepositoryPeerHttpError extends Error {
 }
 
 export class HttpRepositoryPeer implements RepositoryPeer {
-  constructor(readonly peerId: string, private readonly apiUrl: (pathname: string) => string) {}
+  constructor(
+    readonly peerId: string,
+    private readonly apiUrl: (pathname: string) => string,
+    private readonly signal?: AbortSignal,
+    private readonly grantToken = ""
+  ) {}
 
   async identity() {
     return {id: this.peerId, kind: "server" as const};
@@ -26,8 +31,14 @@ export class HttpRepositoryPeer implements RepositoryPeer {
     const response = await fetch(this.apiUrl(pathname), {
       method: "POST",
       cache: "no-store",
-      headers: {"Accept": "application/json", "Content-Type": "application/json"},
-      body: JSON.stringify(body)
+      credentials: "include",
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        ...(this.grantToken ? {"Authorization": `Bearer ${this.grantToken}`} : {})
+      },
+      body: JSON.stringify(body),
+      signal: this.signal
     });
     const payload = await response.json();
     if (!response.ok) throw new RepositoryPeerHttpError(payload.error || `HTTP ${response.status}`, response.status);

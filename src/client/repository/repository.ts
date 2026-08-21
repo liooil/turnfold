@@ -45,6 +45,7 @@ export interface ReplicationRepository {
   pendingPush(peerId: string): Promise<RepositoryPush>;
   applyPush(peerId: string, results: RepositoryPushRefResult[]): Promise<void>;
   applyPull(peerId: string, pull: RepositoryPull): Promise<void>;
+  workingSnapshot(): Promise<import("../../shared/repository-types").WorkingSnapshot>;
 }
 
 export interface PeerSyncStateRepository {

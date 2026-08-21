@@ -1,5 +1,5 @@
 import type {RepositoryRefUpdate, StoredChatMessage} from "../shared/conversation-types";
-import {validMessageObjectId} from "../shared/message-object";
+import {validMessageObjectId, validRepositoryNamespace} from "../shared/message-object";
 import {accountConfig} from "./account";
 import {fetchRepository, pushRepositoryRef, putRepositoryObjects} from "./storage/repository-store";
 import {identityFromHeaders} from "./identity";
@@ -20,18 +20,20 @@ async function repositoryPush(request: Request) {
   try {
     if (request.method !== "POST") return json({error: "Method not allowed"}, 405, {Allow: "POST"});
     const identity = identityFromHeaders(request.headers);
-    const input = await request.json() as {repositoryId?: unknown; objects?: unknown; refs?: unknown};
-    const repositoryId = typeof input.repositoryId === "string" && /^local:[a-zA-Z0-9-]{8,160}$/.test(input.repositoryId)
-      ? input.repositoryId
-      : "";
+    const input = await request.json() as {repositoryId?: unknown; objectRepositoryIds?: unknown; objects?: unknown; refs?: unknown};
+    const repositoryId = validRepositoryNamespace(input.repositoryId) ? input.repositoryId : "";
     if (!repositoryId) return json({error: "repositoryId is required"}, 400);
     const objects = Array.isArray(input.objects) ? input.objects as StoredChatMessage[] : [];
+    const objectRepositoryIds = input.objectRepositoryIds && typeof input.objectRepositoryIds === "object" && !Array.isArray(input.objectRepositoryIds)
+      ? input.objectRepositoryIds as Record<string, unknown>
+      : {};
     for (const object of objects) {
-      if (!(await validMessageObjectId(object, repositoryId))) {
+      const sourceRepositoryId = typeof objectRepositoryIds[object.id] === "string" ? String(objectRepositoryIds[object.id]) : repositoryId;
+      if (!(await validMessageObjectId(object, sourceRepositoryId))) {
         return json({error: `Object ${object?.id || "unknown"} failed content verification`}, 400);
       }
     }
-    const insertedObjects = putRepositoryObjects(identity, objects);
+    const insertedObjects = putRepositoryObjects(identity, objects, repositoryId, objectRepositoryIds);
     const refs = Array.isArray(input.refs) ? input.refs as RepositoryRefUpdate[] : [];
     if (refs.length > 100) return json({error: "refs must contain at most 100 entries"}, 400);
     const results = refs.map((update) => ({conversationId: update.conversationId, ...pushRepositoryRef(identity, update)}));

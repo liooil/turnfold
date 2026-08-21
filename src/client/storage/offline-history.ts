@@ -21,7 +21,11 @@ type CachedConversationRef = Omit<Conversation, "messages"> & {
   profileId: string;
 };
 
-type CachedMessage = StoredChatMessage & {cacheKey: string; profileId: string};
+type CachedMessage = StoredChatMessage & {
+  cacheKey: string;
+  profileId: string;
+  sourceRepositoryId?: string;
+};
 type CachedWorkingItem = WorkingItem & {cacheKey: string; profileId: string};
 
 type CachedReflog = {
@@ -42,6 +46,7 @@ export type RepositoryOutboxRecord = {
   expectedHeadMessageId: string | null;
   expectedHeadVersion: number;
   expectedMetadataVersion: number;
+  peerId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -61,6 +66,25 @@ function normalizedCachedMessage(message: Partial<StoredChatMessage>, parentMess
   };
 }
 
+function messageFromRecord(record: CachedMessage): StoredChatMessage {
+  const {
+    cacheKey: _cacheKey,
+    profileId: _profileId,
+    sourceRepositoryId: _sourceRepositoryId,
+    ...message
+  } = record;
+  return message;
+}
+
+function messageRecord(message: StoredChatMessage, profileId: string, sourceRepositoryId = profileId): CachedMessage {
+  return {
+    ...message,
+    cacheKey: profileCacheKey(profileId, message.id),
+    profileId,
+    sourceRepositoryId
+  };
+}
+
 function normalizedConversationSummary(summary: Partial<ConversationSummary> & {title?: unknown}): ConversationSummary | null {
   if (typeof summary.id !== "string" || !summary.id) return null;
   const timestamp = new Date().toISOString();
@@ -74,6 +98,7 @@ function normalizedConversationSummary(summary: Partial<ConversationSummary> & {
     createdAt: typeof summary.createdAt === "string" ? summary.createdAt : timestamp,
     updatedAt: typeof summary.updatedAt === "string" ? summary.updatedAt : typeof summary.createdAt === "string" ? summary.createdAt : timestamp,
     ...(summary.upstreamHeadMessageId === null || typeof summary.upstreamHeadMessageId === "string" ? {upstreamHeadMessageId: summary.upstreamHeadMessageId} : {}),
+    ...(typeof summary.upstreamPeerId === "string" ? {upstreamPeerId: summary.upstreamPeerId} : {}),
     ...(typeof summary.headVersion === "number" ? {headVersion: summary.headVersion} : {}),
     ...(typeof summary.metadataVersion === "number" ? {metadataVersion: summary.metadataVersion} : {})
   };
@@ -127,7 +152,7 @@ async function ensureSessionMessages() {
   const records = await rawListCachedMessages();
   const next = new Map<string, StoredChatMessage>();
   for (const record of records) {
-    const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
+    const message = messageFromRecord(record);
     next.set(message.id, message);
   }
   sessionMessages = next;
@@ -193,7 +218,14 @@ export async function mergeOfflineProfiles(sourceProfileId: string, targetProfil
         for (const raw of request.result as Array<Record<string, unknown>>) {
           const oldKey = String(raw.cacheKey || "");
           const suffix = oldKey.startsWith(`${sourceProfileId}:`) ? oldKey.slice(sourceProfileId.length) : `:${crypto.randomUUID()}`;
-          const migrated = {...raw, profileId: targetProfileId, cacheKey: `${targetProfileId}${suffix}`};
+          const migrated = {
+            ...raw,
+            profileId: targetProfileId,
+            cacheKey: `${targetProfileId}${suffix}`,
+            ...(storeName === "messages" && typeof raw.sourceRepositoryId !== "string"
+              ? {sourceRepositoryId: sourceProfileId}
+              : {})
+          };
           const existingRequest = store.get(migrated.cacheKey as IDBValidKey);
           existingRequest.onsuccess = () => {
             const existing = existingRequest.result as Record<string, unknown> | undefined;
@@ -283,7 +315,7 @@ export async function cacheConversation(conversation: Conversation) {
   let parentMessageId: string | null = null;
   for (const candidate of conversation.messages) {
     const message = normalizedCachedMessage(candidate, parentMessageId, conversation.updatedAt);
-    records.push({...message, cacheKey: profileCacheKey(profileId, message.id), profileId});
+    records.push(messageRecord(message, profileId));
     parentMessageId = message.id;
   }
   if (records.length) {
@@ -291,7 +323,13 @@ export async function cacheConversation(conversation: Conversation) {
     await new Promise<void>((resolve, reject) => {
       const current = database.transaction("messages", "readwrite");
       const store = current.objectStore("messages");
-      for (const record of records) store.put(record);
+      for (const record of records) {
+        const request = store.get(record.cacheKey);
+        request.onsuccess = () => store.put({
+          ...record,
+          sourceRepositoryId: (request.result as CachedMessage | undefined)?.sourceRepositoryId || record.sourceRepositoryId
+        });
+      }
       current.oncomplete = () => { database.close(); resolve(); };
       current.onerror = () => { database.close(); reject(current.error || new Error("Unable to cache conversation messages")); };
       current.onabort = () => database.close();
@@ -313,26 +351,28 @@ export async function cacheConversation(conversation: Conversation) {
   ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
 }
 
-function loadCachedMessages(profileId: string, ids: string[]) {
+function loadCachedMessageRecords(profileId: string, ids: string[]) {
   const database = openDatabase();
-  return database.then((current) => new Promise<Map<string, StoredChatMessage>>((resolve, reject) => {
+  return database.then((current) => new Promise<Map<string, CachedMessage>>((resolve, reject) => {
     const active = current.transaction("messages", "readonly");
     const store = active.objectStore("messages");
-    const results = new Map<string, StoredChatMessage>();
+    const results = new Map<string, CachedMessage>();
     for (const id of ids) {
       const request = store.get(profileCacheKey(profileId, id));
       request.onsuccess = () => {
         const record = request.result as CachedMessage | undefined;
-        if (record) {
-          const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
-          results.set(id, message);
-        }
+        if (record) results.set(id, record);
       };
     }
     active.oncomplete = () => { current.close(); resolve(results); };
     active.onerror = () => { current.close(); reject(active.error || new Error("Unable to read local message objects")); };
     active.onabort = () => current.close();
   }));
+}
+
+async function loadCachedMessages(profileId: string, ids: string[]) {
+  return new Map([...await loadCachedMessageRecords(profileId, ids)]
+    .map(([id, record]) => [id, messageFromRecord(record)]));
 }
 
 export async function loadCachedConversation(id: string) {
@@ -419,7 +459,7 @@ export async function listCachedMessages() {
   return new Promise<StoredChatMessage[]>((resolve, reject) => {
     const current = database.transaction("messages", "readonly");
     const request = current.objectStore("messages").index("profileId").getAll(profileId);
-    request.onsuccess = () => resolve((request.result as CachedMessage[]).map(({cacheKey: _cacheKey, profileId: _profileId, ...message}) => message));
+    request.onsuccess = () => resolve((request.result as CachedMessage[]).map(messageFromRecord));
     request.onerror = () => reject(request.error || new Error("Unable to list local message objects"));
     current.oncomplete = () => database.close();
   });
@@ -458,7 +498,7 @@ export async function commitLocalMessage(conversationId: string, message: Stored
       existingOutboxRequest.onsuccess = () => {
         const timestamp = new Date().toISOString();
         const existing = existingOutboxRequest.result as RepositoryOutboxRecord | undefined;
-        const object: CachedMessage = {...message, cacheKey: profileCacheKey(profileId, message.id), profileId};
+        const object = messageRecord(message, profileId);
         objects.put(object);
         refs.put({...ref, headMessageId: message.id, messageCount: ref.messageCount + 1, updatedAt: timestamp});
         const log: CachedReflog = {
@@ -479,6 +519,7 @@ export async function commitLocalMessage(conversationId: string, message: Stored
           expectedHeadMessageId: existing?.expectedHeadMessageId ?? ref.upstreamHeadMessageId ?? null,
           expectedHeadVersion: existing?.expectedHeadVersion ?? ref.headVersion ?? 0,
           expectedMetadataVersion: existing?.expectedMetadataVersion ?? ref.metadataVersion ?? 0,
+          peerId: existing?.peerId ?? ref.upstreamPeerId ?? "",
           createdAt: existing?.createdAt || timestamp,
           updatedAt: timestamp
         } satisfies RepositoryOutboxRecord);
@@ -541,6 +582,7 @@ export async function moveLocalConversationHead(conversationId: string, headMess
           expectedHeadMessageId: existing?.expectedHeadMessageId ?? ref.upstreamHeadMessageId ?? null,
           expectedHeadVersion: existing?.expectedHeadVersion ?? ref.headVersion ?? 0,
           expectedMetadataVersion: existing?.expectedMetadataVersion ?? ref.metadataVersion ?? 0,
+          peerId: existing?.peerId ?? ref.upstreamPeerId ?? "",
           createdAt: existing?.createdAt || timestamp,
           updatedAt: timestamp
         } satisfies RepositoryOutboxRecord);
@@ -567,6 +609,7 @@ async function cacheConversationSummariesFromConversation(conversation: Conversa
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     upstreamHeadMessageId: conversation.upstreamHeadMessageId,
+    upstreamPeerId: conversation.upstreamPeerId,
     headVersion: conversation.headVersion,
     metadataVersion: conversation.metadataVersion
   };
@@ -586,7 +629,7 @@ export async function createLocalConversation(conversation: Conversation) {
     const objects = current.objectStore("messages");
     const reflog = current.objectStore("reflog");
     const outbox = current.objectStore("repositoryOutbox");
-    for (const message of local.messages) objects.put({...message, cacheKey: profileCacheKey(profileId, message.id), profileId} satisfies CachedMessage);
+    for (const message of local.messages) objects.put(messageRecord(message, profileId));
     const {messages: _messages, ...summary} = local;
     refs.put({...summary, cacheKey: profileCacheKey(profileId, local.id), profileId} satisfies CachedConversationRef);
     reflog.put({
@@ -606,6 +649,7 @@ export async function createLocalConversation(conversation: Conversation) {
       expectedHeadMessageId: null,
       expectedHeadVersion: 0,
       expectedMetadataVersion: 0,
+      peerId: "",
       createdAt: timestamp,
       updatedAt: timestamp
     } satisfies RepositoryOutboxRecord);
@@ -631,6 +675,7 @@ export async function queueLocalRefUpdate(conversation: Conversation) {
     expectedHeadMessageId: existing?.expectedHeadMessageId ?? conversation.upstreamHeadMessageId ?? null,
     expectedHeadVersion: existing?.expectedHeadVersion ?? conversation.headVersion ?? 0,
     expectedMetadataVersion: existing?.expectedMetadataVersion ?? conversation.metadataVersion ?? 0,
+    peerId: existing?.peerId ?? conversation.upstreamPeerId ?? "",
     createdAt: existing?.createdAt || timestamp,
     updatedAt: timestamp
   };
@@ -638,9 +683,9 @@ export async function queueLocalRefUpdate(conversation: Conversation) {
   return conversation;
 }
 
-export async function repositoryPushPayload() {
+export async function repositoryPushPayload(peerId = "") {
   const profileId = activeProfileId();
-  if (!profileId) return {repositoryId: "", objects: [] as StoredChatMessage[], refs: [] as RepositoryRefUpdate[]};
+  if (!profileId) return {repositoryId: "", objectRepositoryIds: {}, objects: [] as StoredChatMessage[], refs: [] as RepositoryRefUpdate[]};
   const database = await openDatabase();
   const outbox = await new Promise<RepositoryOutboxRecord[]>((resolve, reject) => {
     const current = database.transaction("repositoryOutbox", "readonly");
@@ -649,21 +694,33 @@ export async function repositoryPushPayload() {
     request.onerror = () => reject(request.error);
     current.oncomplete = () => database.close();
   });
-  const objects: StoredChatMessage[] = [];
+  const pendingByConversation = new Map(outbox.map((record) => [record.conversationId, record]));
+  const objectsById = new Map<string, StoredChatMessage>();
+  const objectRepositoryIds: Record<string, string> = {};
   const refs: RepositoryRefUpdate[] = [];
-  for (const pending of outbox) {
-    const conversation = await loadCachedConversation(pending.conversationId);
+  for (const localRef of await listCachedConversationRefs()) {
+    const pending = pendingByConversation.get(localRef.id);
+    const peerChanged = Boolean(peerId) && localRef.upstreamPeerId !== peerId;
+    if (!pending && !peerChanged) continue;
+    const conversation = await loadCachedConversation(localRef.id);
     if (!conversation) continue;
-    const objectsById = await loadCachedMessages(profileId, pending.objectIds);
-    for (const id of pending.objectIds) {
-      const object = objectsById.get(id);
-      if (object) objects.push(object);
+    const resetExpectation = peerChanged || Boolean(peerId && pending?.peerId && pending.peerId !== peerId);
+    const objectIds = resetExpectation || !pending
+      ? conversation.messages.map((message) => message.id)
+      : pending.objectIds;
+    const records = await loadCachedMessageRecords(profileId, objectIds);
+    for (const id of objectIds) {
+      const record = records.get(id);
+      if (!record) continue;
+      objectsById.set(id, messageFromRecord(record));
+      const sourceRepositoryId = record.sourceRepositoryId || profileId;
+      if (sourceRepositoryId !== profileId) objectRepositoryIds[id] = sourceRepositoryId;
     }
     refs.push({
       conversationId: conversation.id,
-      expectedHeadMessageId: pending.expectedHeadMessageId,
-      expectedHeadVersion: pending.expectedHeadVersion,
-      expectedMetadataVersion: pending.expectedMetadataVersion,
+      expectedHeadMessageId: resetExpectation || !pending ? null : pending.expectedHeadMessageId,
+      expectedHeadVersion: resetExpectation || !pending ? 0 : pending.expectedHeadVersion,
+      expectedMetadataVersion: resetExpectation || !pending ? 0 : pending.expectedMetadataVersion,
       headMessageId: conversation.headMessageId,
       name: conversation.name,
       providerId: conversation.providerId,
@@ -673,19 +730,29 @@ export async function repositoryPushPayload() {
       updatedAt: conversation.updatedAt
     });
   }
-  return {repositoryId: profileId, objects, refs};
+  return {repositoryId: profileId, objectRepositoryIds, objects: [...objectsById.values()], refs};
 }
 
-export async function applyRepositoryFetch(repository: RepositoryFetch) {
+export async function applyRepositoryFetch(repository: RepositoryFetch, peerId = "") {
   const profileId = activeProfileId();
   if (!profileId) return;
-  if (repository.objects.length) {
+  const objectRepositoryIds = repository.objectRepositoryIds || {};
+  const objectById = new Map(repository.objects.map((object) => [object.id, object]));
+  const objectIds = new Set([...Object.keys(objectRepositoryIds), ...objectById.keys()]);
+  if (objectIds.size) {
     const database = await openDatabase();
     await new Promise<void>((resolve, reject) => {
       const current = database.transaction("messages", "readwrite");
       const store = current.objectStore("messages");
-      for (const object of repository.objects) {
-        store.put({...object, cacheKey: profileCacheKey(profileId, object.id), profileId});
+      for (const id of objectIds) {
+        const request = store.get(profileCacheKey(profileId, id));
+        request.onsuccess = () => {
+          const existing = request.result as CachedMessage | undefined;
+          const object = objectById.get(id);
+          const sourceRepositoryId = objectRepositoryIds[id] || existing?.sourceRepositoryId || "";
+          if (object) store.put(messageRecord(object, profileId, sourceRepositoryId));
+          else if (existing && sourceRepositoryId) store.put({...existing, sourceRepositoryId});
+        };
       }
       current.oncomplete = () => { database.close(); resolve(); };
       current.onerror = () => { database.close(); reject(current.error || new Error("Unable to apply repository fetch")); };
@@ -695,31 +762,49 @@ export async function applyRepositoryFetch(repository: RepositoryFetch) {
   for (const remote of repository.refs) {
     const local = await loadCachedConversation(remote.id);
     const pending = await transaction<RepositoryOutboxRecord | undefined>("repositoryOutbox", "readonly", (store) => store.get(repositoryOutboxKey(profileId, remote.id)));
-    const canFastForward = !local || (!pending && local.headMessageId === (local.upstreamHeadMessageId ?? local.headMessageId));
+    const differentPeer = Boolean(local && peerId && local.upstreamPeerId !== peerId);
+    const preserveLocal = Boolean(local && (pending || differentPeer));
+    const canFastForward = !local || (!preserveLocal && local.headMessageId === (local.upstreamHeadMessageId ?? local.headMessageId));
     const headMessageId = canFastForward ? remote.headMessageId : local!.headMessageId;
     const messages = await messagePathFromCache(profileId, headMessageId);
     const conversation: Conversation = {
       id: remote.id,
-      name: pending && local ? local.name : remote.name,
+      name: preserveLocal && local ? local.name : remote.name,
       headMessageId,
       upstreamHeadMessageId: remote.headMessageId,
-      providerId: pending && local ? local.providerId : remote.providerId,
-      model: pending && local ? local.model : remote.model,
-      generationSettings: pending && local ? local.generationSettings : remote.generationSettings,
+      upstreamPeerId: peerId,
+      providerId: preserveLocal && local ? local.providerId : remote.providerId,
+      model: preserveLocal && local ? local.model : remote.model,
+      generationSettings: preserveLocal && local ? local.generationSettings : remote.generationSettings,
       headVersion: remote.headVersion,
       metadataVersion: remote.metadataVersion,
       messageCount: messages.length,
       createdAt: remote.createdAt,
-      updatedAt: pending && local ? local.updatedAt : remote.updatedAt,
+      updatedAt: preserveLocal && local ? local.updatedAt : remote.updatedAt,
       messages
     };
     await cacheConversation(conversation);
+    if (preserveLocal && local) {
+      const timestamp = new Date().toISOString();
+      await transaction<IDBValidKey>("repositoryOutbox", "readwrite", (store) => store.put({
+        cacheKey: repositoryOutboxKey(profileId, remote.id),
+        profileId,
+        conversationId: remote.id,
+        objectIds: pending?.objectIds || local.messages.map((message) => message.id),
+        expectedHeadMessageId: remote.headMessageId,
+        expectedHeadVersion: remote.headVersion,
+        expectedMetadataVersion: remote.metadataVersion,
+        peerId,
+        createdAt: pending?.createdAt || timestamp,
+        updatedAt: timestamp
+      } satisfies RepositoryOutboxRecord));
+    }
   }
   const remoteIds = new Set(repository.refs.map((ref) => ref.id));
   for (const local of await loadCachedConversationSummaries()) {
     if (remoteIds.has(local.id)) continue;
     const pending = await transaction<RepositoryOutboxRecord | undefined>("repositoryOutbox", "readonly", (store) => store.get(repositoryOutboxKey(profileId, local.id)));
-    if (!pending && ((local.headVersion || 0) > 0 || (local.metadataVersion || 0) > 0)) await removeCachedConversation(local.id);
+    if (!pending && local.upstreamPeerId === peerId && ((local.headVersion || 0) > 0 || (local.metadataVersion || 0) > 0)) await removeCachedConversation(local.id);
   }
   await recordRepositoryFetch(repository.fetchedAt);
 }
@@ -754,7 +839,7 @@ async function messagePathFromCache(profileId: string, headMessageId: string | n
           fail(new Error(`Local object ${messageId} is unavailable`));
           return;
         }
-        const {cacheKey: _cacheKey, profileId: _profileId, ...message} = record;
+        const message = messageFromRecord(record);
         reversed.push(message);
         next(message.parentMessageId);
       };
@@ -767,14 +852,14 @@ async function messagePathFromCache(profileId: string, headMessageId: string | n
   });
 }
 
-export async function applyRepositoryPushResults(results: Array<{conversationId: string; status: "ok" | "conflict"; ref: ConversationRefState | null}>) {
+export async function applyRepositoryPushResults(results: Array<{conversationId: string; status: "ok" | "conflict"; ref: ConversationRefState | null}>, peerId = "") {
   const profileId = activeProfileId();
   if (!profileId) return;
   for (const result of results) {
     const local = await loadCachedConversation(result.conversationId);
     if (!local || !result.ref) continue;
     if (result.status === "ok") {
-      await cacheConversation({...local, upstreamHeadMessageId: result.ref.headMessageId, headVersion: result.ref.headVersion, metadataVersion: result.ref.metadataVersion});
+      await cacheConversation({...local, upstreamHeadMessageId: result.ref.headMessageId, upstreamPeerId: peerId, headVersion: result.ref.headVersion, metadataVersion: result.ref.metadataVersion});
       const key = repositoryOutboxKey(profileId, result.conversationId);
       if (local.headMessageId === result.ref.headMessageId) {
         await transaction<undefined>("repositoryOutbox", "readwrite", (store) => store.delete(key));
@@ -784,11 +869,27 @@ export async function applyRepositoryPushResults(results: Array<{conversationId:
           ...pending,
           expectedHeadMessageId: result.ref!.headMessageId,
           expectedHeadVersion: result.ref!.headVersion,
-          expectedMetadataVersion: result.ref!.metadataVersion
+          expectedMetadataVersion: result.ref!.metadataVersion,
+          peerId
         }));
       }
     } else {
-      await cacheConversation({...local, upstreamHeadMessageId: result.ref.headMessageId, headVersion: result.ref.headVersion, metadataVersion: result.ref.metadataVersion});
+      await cacheConversation({...local, upstreamHeadMessageId: result.ref.headMessageId, upstreamPeerId: peerId, headVersion: result.ref.headVersion, metadataVersion: result.ref.metadataVersion});
+      const key = repositoryOutboxKey(profileId, result.conversationId);
+      const pending = await transaction<RepositoryOutboxRecord | undefined>("repositoryOutbox", "readonly", (store) => store.get(key));
+      const timestamp = new Date().toISOString();
+      await transaction<IDBValidKey>("repositoryOutbox", "readwrite", (store) => store.put({
+        cacheKey: key,
+        profileId,
+        conversationId: result.conversationId,
+        objectIds: pending?.objectIds || local.messages.map((message) => message.id),
+        expectedHeadMessageId: result.ref!.headMessageId,
+        expectedHeadVersion: result.ref!.headVersion,
+        expectedMetadataVersion: result.ref!.metadataVersion,
+        peerId,
+        createdAt: pending?.createdAt || timestamp,
+        updatedAt: timestamp
+      } satisfies RepositoryOutboxRecord));
     }
   }
 }

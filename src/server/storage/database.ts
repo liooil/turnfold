@@ -19,6 +19,7 @@ export type ConversationRow = {
 
 export type MessageRow = {
   id: string;
+  source_repository_id: string;
   parent_message_id: string | null;
   role: StoredChatMessage["role"];
   parts_json: string;
@@ -68,6 +69,7 @@ export function getDatabase() {
       id TEXT PRIMARY KEY,
       owner_issuer TEXT NOT NULL,
       owner_sub TEXT NOT NULL,
+      source_repository_id TEXT NOT NULL DEFAULT '',
       parent_message_id TEXT REFERENCES chat_message_node(id),
       role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant')),
       parts_json TEXT NOT NULL,
@@ -81,6 +83,10 @@ export function getDatabase() {
     CREATE INDEX IF NOT EXISTS chat_message_node_owner_parent
       ON chat_message_node (owner_issuer, owner_sub, parent_message_id);
   `);
+  const messageColumns = opened.query("PRAGMA table_info(chat_message_node)").all() as Array<{name: string}>;
+  if (!messageColumns.some((column) => column.name === "source_repository_id")) {
+    opened.run("ALTER TABLE chat_message_node ADD COLUMN source_repository_id TEXT NOT NULL DEFAULT ''");
+  }
   database = opened;
   return opened;
 }

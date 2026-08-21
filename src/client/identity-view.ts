@@ -46,7 +46,7 @@ export function createIdentitySyncView(state: AppState, dependencies: {root: HTM
       ? `<span class="identity-sync-avatar"><img class="header-avatar" src="${avatarPlaceholder(profile)}" alt="${escapeHtml(profile.name || profile.username)} 的头像" referrerpolicy="no-referrer"><i class="identity-sync-status" aria-hidden="true"></i></span>`
       : `<span class="identity-sync-avatar identity-sync-local" aria-hidden="true">${dependencies.icons.offline}<i class="identity-sync-status"></i></span>`;
     const content = `${identity}<span class="identity-sync-label">${escapeHtml(visual.label)}</span>`;
-    return `<span class="identity-sync-control ${visual.className}" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(title)}">${content}</span>`;
+    return `<button class="identity-sync-control ${visual.className}" type="button" data-action="open-backend-settings" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(title)}">${content}</button>`;
   }
 
   return {updateSyncIndicator, renderIdentitySyncControl};

@@ -1,5 +1,6 @@
 import {normalizeGenerationSettings} from "../../shared/generation-settings";
 import type {ConversationRefState, RepositoryFetch, RepositoryRefUpdate, StoredChatMessage} from "../../shared/conversation-types";
+import {validRepositoryNamespace} from "../../shared/message-object";
 import type {ChatIdentity} from "../identity";
 import {
   type ConversationRow,
@@ -42,34 +43,49 @@ export function fetchRepository(identity: ChatIdentity, haveObjectIds: unknown):
   const refs = (getDatabase().query(`${conversationSelect}
     WHERE c.owner_issuer = ? AND c.owner_sub = ? ORDER BY c.updated_at DESC
   `).all(identity.issuer, identity.sub) as ConversationRow[]).map(conversationRef);
-  const objects = (getDatabase().query(`
-    SELECT id, parent_message_id, role, parts_json, origin_json, completion_json, metadata_json,
+  const rows = getDatabase().query(`
+    SELECT id, source_repository_id, parent_message_id, role, parts_json, origin_json, completion_json, metadata_json,
       depth, created_at, completed_at
     FROM chat_message_node
     WHERE owner_issuer = ? AND owner_sub = ?
     ORDER BY depth, created_at, id
-  `).all(identity.issuer, identity.sub) as MessageRow[])
-    .filter((row) => !have.has(row.id))
-    .map(parsedMessage);
-  return {refs, objects, fetchedAt: now()};
+  `).all(identity.issuer, identity.sub) as MessageRow[];
+  const missingRows = rows.filter((row) => !have.has(row.id));
+  const objects = missingRows.map(parsedMessage);
+  const objectRepositoryIds = Object.fromEntries(missingRows
+    .filter((row) => row.source_repository_id)
+    .map((row) => [row.id, row.source_repository_id]));
+  return {refs, objects, objectRepositoryIds, fetchedAt: now()};
 }
 
-export function putRepositoryObjects(identity: ChatIdentity, objects: unknown) {
+export function putRepositoryObjects(identity: ChatIdentity, objects: unknown, repositoryId: string, objectRepositoryIds: unknown = {}) {
   if (!Array.isArray(objects) || objects.length > 1000) throw new Error("objects must contain at most 1000 entries");
   let inserted = 0;
   getDatabase().run("BEGIN IMMEDIATE");
   try {
     const insert = getDatabase().query(`
       INSERT INTO chat_message_node (
-        id, owner_issuer, owner_sub, parent_message_id, role, parts_json, origin_json,
+        id, owner_issuer, owner_sub, source_repository_id, parent_message_id, role, parts_json, origin_json,
         completion_json, metadata_json, depth, created_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const sources = objectRepositoryIds && typeof objectRepositoryIds === "object" && !Array.isArray(objectRepositoryIds)
+      ? objectRepositoryIds as Record<string, unknown>
+      : {};
     for (const value of objects) {
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("repository object is invalid");
       const object = value as StoredChatMessage;
       if (typeof object.id !== "string" || !object.id.startsWith("sha256:")) throw new Error("repository object id is invalid");
-      if (ownedMessage(identity, object.id)) continue;
+      const sourceRepositoryId = typeof sources[object.id] === "string" ? String(sources[object.id]) : repositoryId;
+      if (!validRepositoryNamespace(sourceRepositoryId)) throw new Error(`Object ${object.id} has an invalid repository namespace`);
+      const existing = ownedMessage(identity, object.id);
+      if (existing) {
+        if (!existing.source_repository_id) getDatabase().query(`
+          UPDATE chat_message_node SET source_repository_id = ?
+          WHERE id = ? AND owner_issuer = ? AND owner_sub = ? AND source_repository_id = ''
+        `).run(sourceRepositoryId, object.id, identity.issuer, identity.sub);
+        continue;
+      }
       const role = object.role;
       if (!["system", "user", "assistant"].includes(role)) throw new Error("repository object role is invalid");
       const parentMessageId = nullableId(object.parentMessageId, "parentMessageId");
@@ -79,6 +95,7 @@ export function putRepositoryObjects(identity: ChatIdentity, objects: unknown) {
         object.id,
         identity.issuer,
         identity.sub,
+        sourceRepositoryId,
         parentMessageId,
         role,
         JSON.stringify(normalizedParts(object.parts)),

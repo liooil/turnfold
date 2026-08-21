@@ -1,5 +1,6 @@
 import type {GenerationSettings} from "../../shared/generation-settings";
 import type {ProviderMessage, ProviderModel, ProviderProfile, ProviderProtocol, ProviderSecret, ProviderStreamEvent} from "../../shared/provider-types";
+import {executeProviderAgent} from "./provider-agent-client";
 import {describeProviderRequestError} from "./provider-diagnostics";
 
 type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -250,6 +251,30 @@ export async function streamProvider(
   return parseProviderStream(profile.protocol, response, onEvent);
 }
 
+export async function streamProviderViaAgent(
+  profile: ProviderProfile,
+  credentialId: string | undefined,
+  agentUrl: string,
+  grantToken: string,
+  model: string,
+  messages: ProviderMessage[],
+  settings: GenerationSettings,
+  onEvent: (event: ProviderStreamEvent) => void,
+  signal: AbortSignal,
+  agentFetch: ProviderFetch = fetch
+) {
+  const request = createProviderRequest(profile, {}, model, messages, settings, signal);
+  const body = typeof request.init.body === "string" ? JSON.parse(request.init.body) as unknown : undefined;
+  const response = await executeProviderAgent(agentUrl, grantToken, {
+    providerId: profile.id,
+    ...(credentialId ? {credentialId} : {}),
+    operation: "stream",
+    model,
+    body
+  }, agentFetch, signal);
+  return parseProviderStream(profile.protocol, response, onEvent);
+}
+
 export function normalizeDiscoveredModels(payload: unknown): ProviderModel[] {
   const root = record(payload);
   if (!root) return [];
@@ -284,6 +309,41 @@ export async function discoverProviderModels(profile: ProviderProfile, secret: P
     signal: AbortSignal.timeout(15000)
   }, providerFetch);
   if (!response.ok) throw new Error(`Provider HTTP ${response.status}`);
+  const payload = await response.json();
+  if (options.strictShape) {
+    const mismatch = protocolShapeMismatch(profile.protocol, payload);
+    if (mismatch) throw new Error(`模型列表与 ${profile.protocol} 协议不匹配：${mismatch}`);
+  }
+  const models = normalizeDiscoveredModels(payload);
+  if (!models.length) throw new Error("Provider 没有返回可用模型");
+  return models;
+}
+
+export async function discoverProviderModelsViaAgent(
+  profile: ProviderProfile,
+  credentialId: string | undefined,
+  agentUrl: string,
+  grantToken: string,
+  agentFetch: ProviderFetch = fetch,
+  signal: AbortSignal = AbortSignal.timeout(15000),
+  options: {strictShape?: boolean} = {}
+) {
+  const response = await executeProviderAgent(agentUrl, grantToken, {
+    providerId: profile.id,
+    ...(credentialId ? {credentialId} : {}),
+    operation: "discover"
+  }, agentFetch, signal);
+  if (!response.ok) {
+    const text = await response.text();
+    try {
+      const payload = JSON.parse(text) as {error?: {message?: string} | string; message?: string};
+      const nested = typeof payload.error === "object" ? payload.error?.message : payload.error;
+      throw new Error(nested || payload.message || `Provider Agent HTTP ${response.status}`);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(text.slice(0, 1000) || `Provider Agent HTTP ${response.status}`);
+      throw error;
+    }
+  }
   const payload = await response.json();
   if (options.strictShape) {
     const mismatch = protocolShapeMismatch(profile.protocol, payload);

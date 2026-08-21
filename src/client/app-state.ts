@@ -3,6 +3,7 @@ import {defaultGenerationSettings} from "../shared/generation-settings";
 import type {ChatProfile} from "../shared/profile-types";
 import type {ProviderProfile} from "../shared/provider-types";
 import type {LocalCredential} from "./providers/local-providers";
+import type {AgentCredentialMetadata, AgentProviderProfile} from "./providers/provider-agent-client";
 import {embeddedModelsDevCatalog, embeddedModelsDevModelCount} from "./providers/models-dev-catalog";
 
 export type ChatProvider = ProviderProfile & {modelDiscoveryError?: string};
@@ -12,6 +13,7 @@ export type CachedChatBootstrap = {profile?: ChatProfile; config?: ChatConfig};
 export type HashNavigationMode = "push" | "replace" | "none";
 
 export function createInitialAppState() {
+  const localProfile: ChatProfile = {username: "local", name: "本地用户", email: ""};
   return {
     config: null as ChatConfig | null,
     localCredentials: [] as LocalCredential[],
@@ -33,6 +35,55 @@ export function createInitialAppState() {
     historyTree: window.localStorage.getItem("turnfold-history-tree") === "1",
     advancedActions: window.localStorage.getItem("turnfold-advanced-actions") === "1",
     identityKey: "",
+    localProfile,
+    backendUrl: "",
+    backendActiveUrl: "",
+    backendActiveTransport: "" as "" | "native" | "webdav",
+    backendConnecting: false,
+    backendError: "",
+    backendPairingRequired: false,
+    backendPairing: false,
+    backendApprovalUrl: "",
+    backendSavedGrant: false,
+    backendActiveGrantToken: "",
+    backendConnectionController: null as AbortController | null,
+    backendPairingController: null as AbortController | null,
+    backendPairingWindow: null as Window | null,
+    backendSyncController: null as AbortController | null,
+    webdavUrl: window.localStorage.getItem("turnfold-webdav-url") || "",
+    webdavMode: (window.localStorage.getItem("turnfold-webdav-mode") || "turnfold") as "turnfold" | "basic" | "none",
+    webdavUsername: window.localStorage.getItem("turnfold-webdav-username") || "turnfold",
+    webdavPassword: "",
+    webdavActiveRootUrl: "",
+    webdavActiveMode: "" as "" | "turnfold" | "basic" | "none",
+    webdavActiveUsername: "",
+    webdavActivePassword: "",
+    webdavGrantToken: "",
+    webdavSavedGrant: false,
+    webdavConnecting: false,
+    webdavPairingRequired: false,
+    webdavPairing: false,
+    webdavApprovalUrl: "",
+    webdavError: "",
+    webdavController: null as AbortController | null,
+    webdavPairingController: null as AbortController | null,
+    webdavPairingWindow: null as Window | null,
+    providerAgentUrl: "",
+    providerAgentActiveUrl: "",
+    providerAgentGrantToken: "",
+    providerAgentSavedGrant: false,
+    providerAgentConnecting: false,
+    providerAgentPairingRequired: false,
+    providerAgentPairing: false,
+    providerAgentApprovalUrl: "",
+    providerAgentError: "",
+    providerAgentProfiles: [] as AgentProviderProfile[],
+    providerAgentCredentials: [] as AgentCredentialMetadata[],
+    providerAgentModeIds: new Set<string>(),
+    providerAgentController: null as AbortController | null,
+    providerAgentPairingController: null as AbortController | null,
+    providerAgentPairingWindow: null as Window | null,
+    providerAgentSaving: false,
     authenticated: false,
     syncing: false,
     syncRequested: false,

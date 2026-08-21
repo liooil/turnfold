@@ -3,6 +3,7 @@ import {icons} from "./icons";
 import {option, providerProtocolLabel, type ModelChoice} from "./model-selection";
 import {getEmbeddedProviderProfile, isEmbeddedProvider, selectableCatalogProviderProfiles} from "./providers/embedded-providers";
 import type {LocalCredential} from "./providers/local-providers";
+import {agentProfileMatches} from "./providers/provider-agent-controller";
 import {availableModelsDevModels, embeddedModelsDevModelCount} from "./providers/models-dev-catalog";
 
 export function createSettingsView(state: AppState, dependencies: {
@@ -28,7 +29,7 @@ export function createSettingsView(state: AppState, dependencies: {
         const credentialField = existing.auth.type === "none"
           ? '<p class="provider-setup-note">此 Provider 不需要凭据。</p>'
           : `<label class="provider-setup-field"><span>API Key</span><input name="provider-api-key" type="password" autocomplete="off" placeholder="${credential?.secret.apiKey ? "已配置；留空则保持不变" : "输入 API Key"}"></label>`;
-        return `<form class="provider-editor provider-simple-editor" data-provider-credential-form><header><div><strong>${escapeHtml(existing.name)}</strong><small>更新凭据，或进入进阶配置修改连接细节</small></div>${close}</header><div class="provider-setup-summary"><span><strong>${escapeHtml(providerProtocolLabel(existing.protocol))}</strong><small>${escapeHtml(existing.baseUrl)}</small></span><em>${existing.models.length} 个模型</em></div>${credentialField}<footer>${advanced}<button class="provider-save-button" type="submit" title="保存凭据">保存凭据</button></footer></form>`;
+        return `<form class="provider-editor provider-simple-editor" data-provider-credential-form><header><div><strong>${escapeHtml(existing.name)}</strong><small>更新浏览器凭据，或进入进阶配置修改连接细节</small></div>${close}</header><div class="provider-setup-summary"><span><strong>${escapeHtml(providerProtocolLabel(existing.protocol))}</strong><small>${escapeHtml(existing.baseUrl)}</small></span><em>${existing.models.length} 个模型</em></div>${credentialField}<footer>${advanced}<button class="provider-save-button" type="submit" title="保存到浏览器凭据库">保存到浏览器</button></footer></form>`;
       }
       const enabledIds = new Set(state.config?.providers.map((item) => item.id) || []);
       const choices = catalogProfiles.filter((item) => !enabledIds.has(item.id));
@@ -93,17 +94,124 @@ export function createSettingsView(state: AppState, dependencies: {
   function renderProviderSettings() {
     const providers = state.config?.providers || [];
     const rows = providers.map((item) => {
-      const configured = item.auth.type === "none" || state.localCredentials.some((credential) => credential.providerId === item.id);
+      const agentMode = state.providerAgentModeIds.has(item.id);
+      const agentProfile = state.providerAgentProfiles.find((profile) => profile.id === item.id);
+      const agentProfileCurrent = agentProfileMatches(item, agentProfile);
+      const agentCredential = state.providerAgentCredentials.find((credential) => credential.providerId === item.id && credential.name === "default");
+      const browserCredential = state.localCredentials.find((credential) => credential.providerId === item.id);
+      const configured = item.auth.type === "none" || (agentMode ? Boolean(agentCredential) : Boolean(browserCredential));
       const modelSummary = item.models.length ? `${item.models.length} 个模型` : "尚无模型";
       const embeddedProvider = isEmbeddedProvider(item.id);
-      return `<section class="local-key-entry" data-dom-key="provider:${escapeHtml(item.id)}"><span><strong>${escapeHtml(item.name)}<em class="provider-kind">${embeddedProvider ? "内嵌配置" : "自定义"}</em></strong><small>${escapeHtml(providerProtocolLabel(item.protocol))} · ${escapeHtml(item.baseUrl)} · ${modelSummary}${configured ? "" : " · 缺少凭据"}</small>${item.modelDiscoveryError ? `<small class="local-key-error">${escapeHtml(item.modelDiscoveryError)}</small>` : ""}</span><div><button type="button" data-action="add-provider-model" data-provider="${escapeHtml(item.id)}" title="为 ${escapeHtml(item.name)} 添加模型">添加模型</button><button type="button" data-action="probe-provider" data-provider="${escapeHtml(item.id)}" title="刷新 ${escapeHtml(item.name)} 的模型列表">刷新模型</button><button type="button" data-action="edit-provider" data-provider="${escapeHtml(item.id)}" title="编辑 ${escapeHtml(item.name)}">编辑</button><button class="dangerous" type="button" data-action="delete-provider" data-provider="${escapeHtml(item.id)}" title="${embeddedProvider ? "禁用" : "删除"} ${escapeHtml(item.name)}">${embeddedProvider ? "禁用" : "删除"}</button></div></section>`;
+      const register = state.providerAgentActiveUrl && !agentProfileCurrent
+        ? `<button type="button" data-action="register-agent-provider" data-provider="${escapeHtml(item.id)}" title="将当前 Provider profile 登记到 Agent">${agentProfile ? "更新 Agent 配置" : "登记到 Agent"}</button>`
+        : "";
+      const migrate = state.providerAgentActiveUrl && item.auth.type !== "none" && browserCredential && !agentCredential
+        ? `<button type="button" data-action="migrate-agent-credential" data-provider="${escapeHtml(item.id)}" title="明确迁移浏览器凭据到 Agent Vault">迁移凭据</button>`
+        : "";
+      const removeAgentProfile = state.providerAgentActiveUrl && agentProfile && !agentCredential
+        ? `<button class="dangerous" type="button" data-action="delete-agent-provider" data-provider="${escapeHtml(item.id)}" title="仅从 Agent 删除 execution profile">移除 Agent 配置</button>`
+        : "";
+      const mode = state.providerAgentActiveUrl
+        ? `<div class="provider-execution-mode" role="group" aria-label="${escapeHtml(item.name)} 执行位置"><button type="button" class="${agentMode ? "" : "selected"}" data-action="use-browser-provider" data-provider="${escapeHtml(item.id)}" title="由当前浏览器直接请求 Provider">浏览器</button><button type="button" class="${agentMode ? "selected" : ""}" data-action="use-provider-agent" data-provider="${escapeHtml(item.id)}" title="由已连接的本地 Agent 请求 Provider">Agent</button></div>`
+        : "";
+      return `<section class="local-key-entry" data-dom-key="provider:${escapeHtml(item.id)}"><span><strong>${escapeHtml(item.name)}<em class="provider-kind">${embeddedProvider ? "内嵌配置" : "自定义"}</em><em class="provider-kind">${agentMode ? "Agent 执行" : "浏览器直连"}</em></strong><small>${escapeHtml(providerProtocolLabel(item.protocol))} · ${escapeHtml(item.baseUrl)} · ${modelSummary}${configured ? "" : " · 缺少凭据"}${agentMode && !agentProfileCurrent ? " · Agent 配置已过期" : ""}</small>${item.modelDiscoveryError ? `<small class="local-key-error">${escapeHtml(item.modelDiscoveryError)}</small>` : ""}</span><div>${mode}${register}${migrate}${removeAgentProfile}<button type="button" data-action="add-provider-model" data-provider="${escapeHtml(item.id)}" title="为 ${escapeHtml(item.name)} 添加模型">添加模型</button><button type="button" data-action="probe-provider" data-provider="${escapeHtml(item.id)}" title="刷新 ${escapeHtml(item.name)} 的模型列表">刷新模型</button><button type="button" data-action="edit-provider" data-provider="${escapeHtml(item.id)}" title="编辑 ${escapeHtml(item.name)}">编辑</button><button class="dangerous" type="button" data-action="delete-provider" data-provider="${escapeHtml(item.id)}" title="${embeddedProvider ? "禁用" : "删除"} ${escapeHtml(item.name)}">${embeddedProvider ? "禁用" : "删除"}</button></div></section>`;
     }).join("");
-    return `<section class="model-provider-settings"><div class="settings-section-heading provider-settings-heading"><span><strong>已启用</strong><small>连接配置与凭据只保存在当前浏览器</small></span><button type="button" data-action="add-provider" title="添加 Provider">${icons.plus}添加 Provider</button></div>${rows || '<p class="settings-empty">尚未启用 Provider。可从模型目录选择，或让 Turnfold 自动探测 URL。</p>'}${renderProviderEditor()}${renderProviderModelEditor()}${renderModelsDevCatalogSettings()}</section>`;
+    return `<section class="model-provider-settings"><div class="settings-section-heading provider-settings-heading"><span><strong>已启用</strong><small>每个 Provider 独立选择浏览器直连或 Agent 执行</small></span><button type="button" data-action="add-provider" title="添加 Provider">${icons.plus}添加 Provider</button></div>${rows || '<p class="settings-empty">尚未启用 Provider。可从模型目录选择，或让 Turnfold 自动探测 URL。</p>'}${renderProviderEditor()}${renderProviderModelEditor()}${renderModelsDevCatalogSettings()}</section>`;
+  }
+
+  function renderProviderAgentSettings() {
+    const connected = Boolean(state.providerAgentActiveUrl && state.providerAgentGrantToken);
+    const busy = state.providerAgentConnecting || state.providerAgentPairing || state.providerAgentSaving;
+    const status = state.providerAgentPairing ? "等待授权确认" : state.providerAgentConnecting ? "正在连接" : connected ? "已连接" : "未连接";
+    const statusClass = busy ? "fetching" : connected ? "connected" : "local";
+    const statusDetail = connected ? state.providerAgentActiveUrl : state.providerAgentSavedGrant ? "已保存此 Agent 的浏览器授权" : "未授权访问本地服务";
+    const pair = state.providerAgentPairingRequired && !state.providerAgentPairing
+      ? '<button type="button" data-action="pair-provider-agent" title="审批 Provider 执行与 Vault 管理权限">开始授权</button>'
+      : "";
+    const revoke = state.providerAgentSavedGrant
+      ? '<button type="button" data-action="revoke-provider-agent" title="撤销此浏览器的 Provider Agent 授权">撤销授权</button>'
+      : "";
+    const disconnect = connected ? '<button type="button" data-action="disconnect-provider-agent" title="断开 Provider Agent">断开</button>' : "";
+    const approval = state.providerAgentPairing && state.providerAgentApprovalUrl
+      ? `<a class="backend-approval-link" href="${escapeHtml(state.providerAgentApprovalUrl)}" target="_blank" rel="noopener">打开 Agent 确认页</a>`
+      : "";
+    const connection = `<form class="backend-connection provider-agent-connection" data-provider-agent-connection-form><div class="backend-connection-status ${statusClass}"><span><i aria-hidden="true"></i><strong>${escapeHtml(status)}</strong></span><small>${escapeHtml(statusDetail)}</small></div><label class="backend-url-field"><span>Agent URL</span><input name="provider-agent-url" type="url" required value="${escapeHtml(state.providerAgentUrl)}" data-action="provider-agent-url" autocomplete="url" spellcheck="false" placeholder="http://127.0.0.1:3000"${busy ? " disabled" : ""}></label>${approval}${state.providerAgentError ? `<p class="backend-connection-error">${escapeHtml(state.providerAgentError)}</p>` : ""}<div class="backend-connection-actions">${disconnect}${revoke}${pair}<button class="backend-connect-button" type="submit" title="显式连接指定 Provider Agent"${busy ? " disabled" : ""}>${state.providerAgentConnecting ? "连接中…" : "连接"}</button></div></form>`;
+    if (!connected) return connection;
+    const providers = state.config?.providers || [];
+    const options = providers.map((provider) => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.name)}</option>`).join("");
+    const credentialForm = providers.length
+      ? `<form class="provider-agent-credential" data-provider-agent-credential-form><label><span>Provider</span><select name="provider-agent-provider">${options}</select></label><label><span>新凭据</span><input name="provider-agent-api-key" type="password" autocomplete="off" placeholder="直接写入 Agent Vault"></label><button type="submit" title="登记 Provider profile 并保存凭据"${state.providerAgentSaving ? " disabled" : ""}>保存到 Agent</button></form>`
+      : "";
+    const credentials = state.providerAgentCredentials.map((credential) => {
+      const provider = providers.find((item) => item.id === credential.providerId);
+      return `<section class="local-key-entry agent-credential-entry" data-dom-key="agent-credential:${escapeHtml(credential.id)}"><span><strong>${escapeHtml(provider?.name || credential.providerId)}</strong><small>${escapeHtml(credential.name)} · fingerprint ${escapeHtml(credential.fingerprint)}${credential.lastUsedAt ? ` · 已使用` : ""}</small></span><div><button class="dangerous" type="button" data-action="delete-agent-credential" data-credential="${escapeHtml(credential.id)}" title="从 Agent Vault 删除凭据">删除</button></div></section>`;
+    }).join("");
+    return `${connection}<div class="provider-agent-vault"><div class="settings-section-heading"><span><strong>Agent Vault</strong><small>metadata 可见；明文凭据不会返回浏览器</small></span></div>${credentialForm}${credentials || '<p class="settings-empty">Agent Vault 中尚无凭据。</p>'}</div>`;
   }
 
   function renderGenerationSettings() {
     const settings = state.generationSettings;
     return `${dependencies.renderEffortControl("settings-effort")}<div class="settings-field-grid"><label class="settings-check"><input type="checkbox" data-setting="showReasoningSummary"${settings.showReasoningSummary ? " checked" : ""}><span><strong>显示思考摘要</strong><small>Provider 支持时返回可见的思考摘要</small></span></label><label>Temperature<input type="number" min="0" max="2" step="0.1" placeholder="自动" data-setting="temperature" value="${settings.temperature ?? ""}"></label><label>最大输出 Tokens<input type="number" min="1" max="1000000" step="1" placeholder="自动" data-setting="maxOutputTokens" value="${settings.maxOutputTokens ?? ""}"></label></div><button class="settings-reset-button" type="button" data-action="reset-settings" title="恢复默认生成参数">恢复默认生成参数</button>`;
+  }
+
+  function renderBackendSettings() {
+    const activeUrl = state.backendActiveUrl;
+    const connected = state.authenticated && state.backendActiveTransport === "native" && Boolean(activeUrl);
+    const status = state.backendPairing
+      ? "等待配对确认"
+      : state.backendConnecting
+      ? "正在连接"
+      : connected ? state.syncing ? "正在同步" : state.syncError ? "已连接，等待同步" : "已连接" : "未连接";
+    const statusClass = state.backendConnecting || state.backendPairing || state.syncing ? "fetching" : connected ? state.syncError ? "error" : "connected" : "local";
+    const active = connected
+      ? `<div class="backend-connection-status ${statusClass}"><span><i aria-hidden="true"></i><strong>${escapeHtml(status)}</strong></span><small>${escapeHtml(activeUrl)}</small></div>`
+      : `<div class="backend-connection-status ${statusClass}"><span><i aria-hidden="true"></i><strong>${escapeHtml(status)}</strong></span><small>${state.backendSavedGrant ? "已保存此 Backend 的浏览器配对" : "当前浏览器仓库"}</small></div>`;
+    const error = state.backendError || (connected ? state.syncError : "");
+    const disconnect = connected ? '<button type="button" data-action="disconnect-backend" title="断开 Backend">断开</button>' : "";
+    const synchronize = connected ? '<button type="button" data-action="sync-backend" title="立即同步 Backend">立即同步</button>' : "";
+    const pair = state.backendPairingRequired && !state.backendPairing
+      ? '<button type="button" data-action="pair-backend" title="在 Backend 上确认浏览器配对">开始配对</button>'
+      : "";
+    const revoke = state.backendSavedGrant
+      ? '<button type="button" data-action="revoke-backend-pairing" title="撤销此浏览器的 Backend 授权">撤销配对</button>'
+      : "";
+    const approval = state.backendPairing && state.backendApprovalUrl
+      ? `<a class="backend-approval-link" href="${escapeHtml(state.backendApprovalUrl)}" target="_blank" rel="noopener">打开 Backend 确认页</a>`
+      : "";
+    const busy = state.backendConnecting || state.backendPairing;
+    const connectLabel = state.backendConnecting ? "连接中…" : state.backendPairing ? "等待确认…" : connected && state.backendUrl === activeUrl ? "重新连接" : "连接";
+    return `<form class="backend-connection" data-backend-connection-form>${active}<label class="backend-url-field"><span>Backend URL</span><input name="backend-url" type="url" required value="${escapeHtml(state.backendUrl)}" data-action="backend-url" autocomplete="url" spellcheck="false" placeholder="http://127.0.0.1:3000"${busy ? " disabled" : ""}></label>${approval}${error ? `<p class="backend-connection-error">${escapeHtml(error)}</p>` : ""}<div class="backend-connection-actions">${disconnect}${synchronize}${revoke}${pair}<button class="backend-connect-button" type="submit" title="连接指定 Backend"${busy ? " disabled" : ""}>${connectLabel}</button></div></form>`;
+  }
+
+  function renderWebDavSettings() {
+    const connected = state.authenticated && state.backendActiveTransport === "webdav" && Boolean(state.webdavActiveRootUrl);
+    const busy = state.webdavConnecting || state.webdavPairing || state.syncing && connected;
+    const status = state.webdavPairing
+      ? "等待授权确认"
+      : state.webdavConnecting
+      ? "正在连接"
+      : connected ? state.syncing ? "正在同步" : state.syncError ? "已连接，等待同步" : "已连接" : "未连接";
+    const statusClass = busy ? "fetching" : connected ? state.syncError ? "error" : "connected" : "local";
+    const detail = connected
+      ? state.webdavActiveRootUrl
+      : state.webdavMode === "turnfold" && state.webdavSavedGrant ? "已保存此服务的 WebDAV 授权" : "当前浏览器仓库";
+    const urlLabel = state.webdavMode === "turnfold" ? "Turnfold Service URL" : "WebDAV Root URL";
+    const credentials = state.webdavMode === "basic"
+      ? `<div class="webdav-credential-fields"><label class="backend-url-field"><span>用户名</span><input type="text" value="${escapeHtml(state.webdavUsername)}" data-action="webdav-username" autocomplete="username" required${busy ? " disabled" : ""}></label><label class="backend-url-field"><span>密码</span><input type="password" value="${escapeHtml(state.webdavPassword)}" data-action="webdav-password" autocomplete="current-password" required${busy ? " disabled" : ""}></label></div>`
+      : "";
+    const pair = state.webdavMode === "turnfold" && state.webdavPairingRequired && !state.webdavPairing
+      ? '<button type="button" data-action="pair-webdav" title="审批独立的 Repository WebDAV 权限">开始授权</button>'
+      : "";
+    const revoke = state.webdavMode === "turnfold" && state.webdavSavedGrant
+      ? '<button type="button" data-action="revoke-webdav" title="撤销此浏览器的 WebDAV 授权">撤销授权</button>'
+      : "";
+    const approval = state.webdavPairing && state.webdavApprovalUrl
+      ? `<a class="backend-approval-link" href="${escapeHtml(state.webdavApprovalUrl)}" target="_blank" rel="noopener">打开 WebDAV 确认页</a>`
+      : "";
+    const disconnect = connected ? '<button type="button" data-action="disconnect-webdav" title="断开 WebDAV">断开</button>' : "";
+    const synchronize = connected ? '<button type="button" data-action="sync-webdav" title="立即同步 WebDAV">立即同步</button>' : "";
+    const error = state.webdavError || (connected ? state.syncError : "");
+    return `<form class="backend-connection webdav-connection" data-webdav-connection-form><div class="backend-connection-status ${statusClass}"><span><i aria-hidden="true"></i><strong>${escapeHtml(status)}</strong></span><small>${escapeHtml(detail)}</small></div><label class="backend-url-field"><span>连接类型</span><select data-action="webdav-mode"${busy ? " disabled" : ""}><option value="turnfold"${state.webdavMode === "turnfold" ? " selected" : ""}>Turnfold 授权</option><option value="basic"${state.webdavMode === "basic" ? " selected" : ""}>标准 WebDAV · Basic</option><option value="none"${state.webdavMode === "none" ? " selected" : ""}>标准 WebDAV · 无认证</option></select></label><label class="backend-url-field"><span>${urlLabel}</span><input type="url" required value="${escapeHtml(state.webdavUrl)}" data-action="webdav-url" autocomplete="url" spellcheck="false" placeholder="http://127.0.0.1:3000"${busy ? " disabled" : ""}></label>${credentials}${approval}${error ? `<p class="backend-connection-error">${escapeHtml(error)}</p>` : ""}<div class="backend-connection-actions">${disconnect}${synchronize}${revoke}${pair}<button class="backend-connect-button" type="submit" title="显式连接 WebDAV"${busy ? " disabled" : ""}>${state.webdavConnecting ? "连接中…" : state.webdavPairing ? "等待确认…" : "连接"}</button></div></form>`;
   }
 
   function renderSettingsPage() {
@@ -116,7 +224,14 @@ export function createSettingsView(state: AppState, dependencies: {
       return items.length ? `<section class="settings-model-group" data-dom-key="model-group:${escapeHtml(item.id)}"><h3>${escapeHtml(item.name)}</h3><div>${items.map(dependencies.renderModelOption).join("")}</div></section>` : "";
     }).join("");
     const providerSettings = renderProviderSettings();
-    return `<section class="settings-page" role="dialog" aria-modal="true" aria-label="设置"><header class="settings-page-header"><button type="button" data-action="close-settings" aria-label="关闭设置" title="关闭设置">${icons.close}</button><span><strong>设置</strong><small>Provider 与凭据保存在当前浏览器</small></span></header><div class="settings-layout"><nav class="settings-nav" aria-label="设置分类"><button type="button" data-action="scroll-settings-section" data-id="settings-models" title="滚动到模型设置">模型</button><button type="button" data-action="scroll-settings-section" data-id="settings-generation" title="滚动到生成设置">生成</button><button type="button" data-action="scroll-settings-section" data-id="settings-providers" title="滚动到 Provider 设置">Provider</button><button type="button" data-action="scroll-settings-section" data-id="settings-interface" title="滚动到界面设置">界面</button></nav><main class="settings-content"><section class="settings-card" id="settings-models"><header><h2>模型</h2><p>选择当前会话使用的模型。</p></header><label class="settings-model-search">${icons.search}<input value="${escapeHtml(state.modelQuery)}" data-action="model-search" placeholder="搜索 Provider 或模型"></label><div class="settings-model-groups">${groups || '<p class="settings-empty">没有可用模型；请启用内嵌 Provider 或添加自定义 Provider。</p>'}</div></section><section class="settings-card" id="settings-generation"><header><h2>生成</h2><p>这些参数随当前会话保存。</p></header>${renderGenerationSettings()}</section><section class="settings-card" id="settings-providers"><header><h2>Provider</h2><p>所有模型请求都由当前浏览器直接发送。</p></header>${providerSettings}</section><section class="settings-card" id="settings-interface"><header><h2>界面</h2><p>这些选项仅保存在当前浏览器。</p></header><div class="settings-interface-options"><label class="settings-check"><input type="checkbox" data-action="advanced-actions"${state.advancedActions ? " checked" : ""}><span><strong>显示高级对话操作</strong><small>显示“需要回答”和编辑助手回答</small></span></label><label class="settings-check"><input type="checkbox" data-action="history-tree-setting"${state.historyTree ? " checked" : ""}><span><strong>树状显示聊天历史</strong><small>按会话名称中的路径组织侧栏</small></span></label></div></section></main></div></section>`;
+    const navigation = `<nav class="settings-nav" aria-label="设置分类"><button type="button" data-action="scroll-settings-section" data-id="settings-models" title="滚动到模型设置">模型</button><button type="button" data-action="scroll-settings-section" data-id="settings-generation" title="滚动到生成设置">生成</button><button type="button" data-action="scroll-settings-section" data-id="settings-providers" title="滚动到 Provider 设置">Provider</button><button type="button" data-action="scroll-settings-section" data-id="settings-backend" title="滚动到 Backend 设置">Backend</button><button type="button" data-action="scroll-settings-section" data-id="settings-webdav" title="滚动到 WebDAV 设置">WebDAV</button><button type="button" data-action="scroll-settings-section" data-id="settings-interface" title="滚动到界面设置">界面</button></nav>`;
+    const modelSettings = `<section class="settings-card" id="settings-models"><header><h2>模型</h2><p>选择当前会话使用的模型。</p></header><label class="settings-model-search">${icons.search}<input value="${escapeHtml(state.modelQuery)}" data-action="model-search" placeholder="搜索 Provider 或模型"></label><div class="settings-model-groups">${groups || '<p class="settings-empty">没有可用模型；请启用内嵌 Provider 或添加自定义 Provider。</p>'}</div></section>`;
+    const generationSettings = `<section class="settings-card" id="settings-generation"><header><h2>生成</h2><p>这些参数随当前会话保存。</p></header>${renderGenerationSettings()}</section>`;
+    const providers = `<section class="settings-card" id="settings-providers"><header><h2>Provider</h2><p>默认由浏览器直连；可为单个 Provider 显式启用本地 Agent。</p></header>${providerSettings}<div class="provider-agent-settings"><div class="settings-section-heading"><span><strong>本地 Provider Agent</strong><small>连接和授权独立于 Backend 仓库同步</small></span></div>${renderProviderAgentSettings()}</div></section>`;
+    const backend = `<section class="settings-card" id="settings-backend"><header><h2>Backend</h2><p>浏览器仓库始终独立可用；一次只连接一个远端 repository。</p></header>${renderBackendSettings()}</section>`;
+    const webdav = `<section class="settings-card" id="settings-webdav"><header><h2>WebDAV</h2><p>Refs 使用 ETag 并发控制；工作项按当前设备备份。</p></header>${renderWebDavSettings()}</section>`;
+    const interfaceSettings = `<section class="settings-card" id="settings-interface"><header><h2>界面</h2><p>这些选项仅保存在当前浏览器。</p></header><div class="settings-interface-options"><label class="settings-check"><input type="checkbox" data-action="advanced-actions"${state.advancedActions ? " checked" : ""}><span><strong>显示高级对话操作</strong><small>显示“需要回答”和编辑助手回答</small></span></label><label class="settings-check"><input type="checkbox" data-action="history-tree-setting"${state.historyTree ? " checked" : ""}><span><strong>树状显示聊天历史</strong><small>按会话名称中的路径组织侧栏</small></span></label></div></section>`;
+    return `<section class="settings-page" role="dialog" aria-modal="true" aria-label="设置"><header class="settings-page-header"><button type="button" data-action="close-settings" aria-label="关闭设置" title="关闭设置">${icons.close}</button><span><strong>设置</strong><small>工作区、Provider 与凭据默认保存在当前浏览器</small></span></header><div class="settings-layout">${navigation}<main class="settings-content">${modelSettings}${generationSettings}${providers}${backend}${webdav}${interfaceSettings}</main></div></section>`;
   }
 
   return {renderProviderSettings, renderSettingsPage};

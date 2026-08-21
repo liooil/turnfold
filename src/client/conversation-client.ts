@@ -5,14 +5,10 @@ import type {
 } from "../shared/conversation-types";
 import type {GenerationSettings} from "../shared/generation-settings";
 import {conversationRepository, peerSyncStateRepository, replicationRepository} from "./repository/repositories";
+import {backendApiUrl, normalizeBackendUrl} from "./backend-connection";
 import {HttpRepositoryPeer} from "./sync/http-repository-peer";
 import {SyncEngine} from "./sync/sync-engine";
-
-declare const __TURNFOLD_BASE_PATH__: string | undefined;
-
-const chatBasePath = typeof __TURNFOLD_BASE_PATH__ !== "undefined" ? __TURNFOLD_BASE_PATH__ : "";
-const chatApi = (pathname: string) => `${chatBasePath}${pathname}`;
-const httpRepositoryPeer = new HttpRepositoryPeer(`server:${window.location.origin}${chatBasePath}`, chatApi);
+import {WebDavRepositoryPeer, type WebDavAuthentication} from "./sync/webdav-repository-peer";
 const syncEngine = new SyncEngine(replicationRepository, peerSyncStateRepository);
 
 export type MessageCommitInput = {
@@ -94,9 +90,24 @@ export function moveConversationHead(conversationId: string, headMessageId: stri
 export async function deleteConversationHistory(id: string) {
   await conversationRepository.remove(id);
 }
-export async function synchronizeConversationRepository() {
+export async function synchronizeConversationRepository(backendUrl: string, signal?: AbortSignal, grantToken = "") {
+  const normalized = normalizeBackendUrl(backendUrl);
+  const httpRepositoryPeer = new HttpRepositoryPeer(
+    `server:${normalized}`,
+    (pathname) => backendApiUrl(normalized, pathname),
+    signal,
+    grantToken
+  );
   const result = await syncEngine.syncWith(httpRepositoryPeer);
   return {summaries: await conversationRepository.list(), ...result};
 }
 
-export const synchronizeOfflineConversationHistory = synchronizeConversationRepository;
+export async function synchronizeConversationWebDav(
+  webdavUrl: string,
+  authentication: WebDavAuthentication,
+  signal?: AbortSignal
+) {
+  const peer = new WebDavRepositoryPeer(webdavUrl, authentication, signal);
+  const result = await syncEngine.syncWith(peer);
+  return {summaries: await conversationRepository.list(), ...result};
+}

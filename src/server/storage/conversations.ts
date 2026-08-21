@@ -44,7 +44,7 @@ export function ownedConversation(identity: ChatIdentity, id: string) {
 
 export function ownedMessage(identity: ChatIdentity, id: string) {
   return getDatabase().query(`
-    SELECT id, parent_message_id, role, parts_json, origin_json, completion_json, metadata_json,
+    SELECT id, source_repository_id, parent_message_id, role, parts_json, origin_json, completion_json, metadata_json,
       depth, created_at, completed_at
     FROM chat_message_node WHERE id = ? AND owner_issuer = ? AND owner_sub = ?
   `).get(id, identity.issuer, identity.sub) as MessageRow | undefined;

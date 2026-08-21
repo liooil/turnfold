@@ -14,6 +14,7 @@ import {
 import {embeddedModelsDevCatalog, embeddedModelsDevModelCount, modelsDevModel, modelsDevModelCount} from "./models-dev-catalog";
 import {deleteStoredModelsDevCatalog, downloadModelsDevCatalog} from "./models-dev-storage";
 import {autoDetectProvider} from "./provider-auto-detect";
+import {saveProviderAgentModes} from "./provider-agent-client";
 import {providerHeadersFromJson, validProviderId, validProviderUrl} from "./provider-validation";
 
 type Dependencies = {
@@ -292,7 +293,10 @@ export function createProviderController(state: AppState, dependencies: Dependen
     } catch (error) {
       const message = error instanceof Error ? error.message : "未知错误";
       state.config.providers = state.config.providers.map((candidate) => candidate.id === providerId ? {...candidate, modelDiscoveryError: message} : candidate);
-      window.alert(`探测失败：${message}\n\n请确认 Provider 允许当前网页跨域访问；本机端点还可能需要浏览器的“本地网络访问”权限。`);
+      const hint = state.providerAgentModeIds.has(providerId)
+        ? "请确认 Provider Agent 已连接、profile 已更新且 Vault 凭据有效。"
+        : "请确认 Provider 允许当前网页跨域访问；本机端点还可能需要浏览器的“本地网络访问”权限。";
+      window.alert(`探测失败：${message}\n\n${hint}`);
     }
     render();
   }
@@ -306,6 +310,9 @@ export function createProviderController(state: AppState, dependencies: Dependen
     if (!item || !window.confirm(prompt)) return;
     await deleteLocalProviderProfile(providerId);
     await deleteLocalCredential(providerId);
+    state.providerAgentModeIds.delete(providerId);
+    state.providerAgentModeIds = new Set(state.providerAgentModeIds);
+    saveProviderAgentModes(window.localStorage, state.providerAgentModeIds);
     state.localCredentials = await listLocalCredentials();
     state.config.providers = state.config.providers.filter((candidate) => candidate.id !== providerId);
     if (state.providerId === providerId) {

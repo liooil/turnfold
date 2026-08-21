@@ -60,6 +60,7 @@ export type ConversationSummary = {
   createdAt: string;
   updatedAt: string;
   upstreamHeadMessageId?: string | null;
+  upstreamPeerId?: string;
   headVersion?: number;
   metadataVersion?: number;
 };
@@ -108,6 +109,7 @@ export type ConversationRefState = {
 export type RepositoryFetch = {
   refs: ConversationRefState[];
   objects: StoredChatMessage[];
+  objectRepositoryIds?: Record<string, string>;
   fetchedAt: string;
 };
 

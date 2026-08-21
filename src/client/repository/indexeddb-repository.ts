@@ -1,5 +1,6 @@
 import type {Conversation} from "../../shared/conversation-types";
 import {
+  activeOfflineProfileId,
   applyRepositoryFetch,
   applyRepositoryPushResults,
   commitLocalMessage,
@@ -108,15 +109,23 @@ export class IndexedDbReplicationRepository implements ReplicationRepository {
     return {haveObjectIds: await listCachedObjectIds()};
   }
 
-  pendingPush(_peerId: string) {
-    return repositoryPushPayload();
+  pendingPush(peerId: string) {
+    return repositoryPushPayload(peerId);
   }
 
-  applyPush(_peerId: string, results: Parameters<typeof applyRepositoryPushResults>[0]) {
-    return applyRepositoryPushResults(results);
+  applyPush(peerId: string, results: Parameters<typeof applyRepositoryPushResults>[0]) {
+    return applyRepositoryPushResults(results, peerId);
   }
 
-  applyPull(_peerId: string, pull: Parameters<typeof applyRepositoryFetch>[0]) {
-    return applyRepositoryFetch(pull);
+  applyPull(peerId: string, pull: Parameters<typeof applyRepositoryFetch>[0]) {
+    return applyRepositoryFetch(pull, peerId);
+  }
+
+  async workingSnapshot() {
+    return {
+      deviceId: activeOfflineProfileId(),
+      snapshotAt: new Date().toISOString(),
+      items: await listWorkingItems()
+    };
   }
 }

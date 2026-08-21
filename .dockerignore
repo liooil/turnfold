@@ -1,4 +1,5 @@
 node_modules
+target
 dist
 docs/app
 pages-dist
@@ -7,3 +8,9 @@ package-lock.json
 npm-debug.log
 data
 run
+release
+*.db
+*.db.lock
+*.db-shm
+*.db-wal
+*.vault.key

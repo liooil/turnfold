@@ -25,6 +25,7 @@ export class SyncEngine {
       }
       const pull = await peer.pull(await this.repository.inventory(peerId));
       await this.repository.applyPull(peerId, pull);
+      if (peer.backupWorking) await peer.backupWorking(await this.repository.workingSnapshot());
       const lastSyncAt = new Date().toISOString();
       await this.peerStates.save({peerId, lastSyncAt, lastPullAt: pull.fetchedAt, lastPushAt, lastError: ""});
       return {fetchedAt: pull.fetchedAt, conflicts};

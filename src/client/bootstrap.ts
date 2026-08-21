@@ -1,11 +1,25 @@
 import {conversationIdFromHash} from "../shared/conversation-hash";
-import type {CachedChatBootstrap, ChatProvider, ServerChatConfig} from "./app-state";
+import type {CachedChatBootstrap, ChatProvider} from "./app-state";
+import {
+  BackendPairingRequiredError,
+  backendApprovalUrl,
+  backendGrantToken,
+  backendUrlStorageKey,
+  fetchBackendConfig,
+  normalizeBackendUrl,
+  pollBackendPairing,
+  removeBackendGrant,
+  revokeBackendGrant,
+  saveBackendGrant,
+  startBackendPairing,
+  suggestedBackendUrl
+} from "./backend-connection";
 import {
   getConversationHistory,
   listConversationHistory,
   synchronizeConversationRepository
 } from "./conversation-client";
-import {appUrl} from "./environment";
+import {basePath} from "./environment";
 import {listLocalCredentials, listLocalProviderProfiles} from "./providers/local-providers";
 import {modelsDevModelCount} from "./providers/models-dev-catalog";
 import {loadStoredModelsDevCatalog} from "./providers/models-dev-storage";
@@ -33,10 +47,6 @@ type BootstrapDependencies = {
 };
 
 export function createBootstrap(state: AppState, dependencies: BootstrapDependencies) {
-  function cachedProfile(value: CachedChatBootstrap | undefined) {
-    return value?.profile || value?.config?.profile;
-  }
-
   async function restoreWorkspace(preferredConversationId = "") {
     if (!state.config) return;
     const hashId = conversationIdFromHash(window.location.hash);
@@ -72,6 +82,8 @@ export function createBootstrap(state: AppState, dependencies: BootstrapDependen
     if (!window.localStorage.getItem("turnfold-client-id")) window.localStorage.setItem("turnfold-client-id", uuid());
     const clientId = window.localStorage.getItem("turnfold-client-id")!;
     const repositoryId = `local:${clientId}`;
+    state.backendUrl = suggestedBackendUrl(window.localStorage, window.location.href, basePath);
+    state.backendSavedGrant = Boolean(backendGrantToken(window.localStorage, state.backendUrl));
     state.localCredentials = await listLocalCredentials();
     try {
       const storedModelsDev = await loadStoredModelsDevCatalog();
@@ -95,13 +107,13 @@ export function createBootstrap(state: AppState, dependencies: BootstrapDependen
     const stored = await loadCachedChatConfig<CachedChatBootstrap>(repositoryId);
     state.identityKey = repositoryId;
     state.config = {
-      profile: cachedProfile(stored?.config) || cachedProfile(previouslyActive?.config) || {username: "local", name: "本地用户", email: ""},
+      profile: {...state.localProfile},
       providers: []
     };
     state.lastFetchAt = stored?.lastFetchAt || await cachedLastFetchAt();
     state.conversations = await listConversationHistory();
     state.config.providers = await listLocalProviderProfiles();
-    await cacheChatConfig(repositoryId, {profile: state.config.profile});
+    await cacheChatConfig(repositoryId, {profile: state.localProfile});
     await restoreWorkspace();
     // The full local message graph is profile-wide; load it once at startup
     // (and after sync), not on every conversation switch.
@@ -117,40 +129,316 @@ export function createBootstrap(state: AppState, dependencies: BootstrapDependen
       dependencies.root.querySelector<HTMLElement>("#settings-providers")?.scrollIntoView({block: "start"});
     });
 
+  }
+
+  async function connectBackend(value: string) {
+    if (state.backendConnecting || state.backendPairing || !state.config) return;
+    let backendUrl: string;
     try {
-      const response = await fetch(appUrl("/api/config"), {cache: "no-store", redirect: "manual"});
-      if (response.type === "opaqueredirect" || response.status === 0 || response.status === 401 || response.status >= 300 && response.status < 400) return;
-      const payload = await response.json() as ServerChatConfig & {error?: string};
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      state.authenticated = true;
+      backendUrl = normalizeBackendUrl(value, window.location.href);
+    } catch (error) {
+      state.backendError = error instanceof Error ? error.message : "Backend URL 无效";
+      dependencies.renderApp();
+      return;
+    }
+
+    const previous = {
+      activeUrl: state.backendActiveUrl,
+      activeTransport: state.backendActiveTransport,
+      activeGrantToken: state.backendActiveGrantToken,
+      authenticated: state.authenticated,
+      profile: state.config.profile
+    };
+    const grantToken = backendGrantToken(window.localStorage, backendUrl);
+    state.backendUrl = backendUrl;
+    state.backendSavedGrant = Boolean(grantToken);
+    state.backendConnecting = true;
+    state.backendError = "";
+    state.backendPairingRequired = false;
+    state.backendApprovalUrl = "";
+    state.syncError = "";
+    window.clearTimeout(state.syncTimer);
+    state.syncRequested = false;
+    state.backendConnectionController?.abort();
+    state.backendSyncController?.abort();
+    state.backendSyncController = null;
+    state.syncing = false;
+    const connectionController = new AbortController();
+    state.backendConnectionController = connectionController;
+    const ownsConnection = () => state.backendConnectionController === connectionController
+      && !connectionController.signal.aborted;
+    dependencies.renderApp();
+
+    let payload;
+    try {
+      payload = await fetchBackendConfig(backendUrl, fetch, connectionController.signal, grantToken);
+    } catch (error) {
+      if (!ownsConnection()) return;
+      state.backendConnectionController = null;
+      state.backendActiveUrl = previous.activeUrl;
+      state.backendActiveTransport = previous.activeTransport;
+      state.backendActiveGrantToken = previous.activeGrantToken;
+      state.authenticated = previous.authenticated;
+      state.config.profile = previous.profile;
+      state.backendConnecting = false;
+      if (error instanceof BackendPairingRequiredError) {
+        if (grantToken) removeBackendGrant(window.localStorage, backendUrl);
+        state.backendSavedGrant = false;
+        state.backendPairingRequired = true;
+      }
+      state.backendError = error instanceof Error ? error.message : "Backend 连接失败";
+      dependencies.renderApp();
+      return;
+    }
+
+    if (!ownsConnection()) return;
+
+    const repositoryId = state.identityKey;
+    try {
       await mergeOfflineProfiles(payload.identityKey, repositoryId);
-      state.identityKey = repositoryId;
-      activateOfflineProfile(repositoryId);
-      state.config.profile = payload.profile;
-      await cacheChatConfig(repositoryId, {profile: payload.profile});
-      state.syncing = true;
-      dependencies.updateSyncIndicator();
-      const preferredConversationId = state.conversation?.id || "";
-      const synchronized = await synchronizeConversationRepository();
+    } catch (error) {
+      if (!ownsConnection()) return;
+      state.backendConnectionController = null;
+      state.backendActiveUrl = previous.activeUrl;
+      state.backendActiveTransport = previous.activeTransport;
+      state.backendActiveGrantToken = previous.activeGrantToken;
+      state.authenticated = previous.authenticated;
+      state.config.profile = previous.profile;
+      state.backendConnecting = false;
+      state.backendError = error instanceof Error ? error.message : "无法准备本地仓库";
+      dependencies.renderApp();
+      return;
+    }
+    if (!ownsConnection()) return;
+    state.backendConnectionController = null;
+    activateOfflineProfile(repositoryId);
+    state.backendActiveUrl = backendUrl;
+    state.backendActiveTransport = "native";
+    state.backendActiveGrantToken = grantToken;
+    state.authenticated = true;
+    state.config.profile = payload.profile;
+    state.initialFetchComplete = false;
+    state.backendConnecting = false;
+    state.offline = !navigator.onLine;
+    window.localStorage.setItem(backendUrlStorageKey, backendUrl);
+    dependencies.renderApp();
+
+    state.syncing = true;
+    const syncController = new AbortController();
+    state.backendSyncController = syncController;
+    const ownsSync = () => state.backendSyncController === syncController
+      && !syncController.signal.aborted
+      && state.backendActiveUrl === backendUrl
+      && state.backendActiveTransport === "native";
+    dependencies.updateSyncIndicator();
+    const preferredConversationId = state.conversation?.id || "";
+    try {
+      const synchronized = await synchronizeConversationRepository(backendUrl, syncController.signal, grantToken);
+      if (!ownsSync()) return;
       state.lastFetchAt = synchronized.fetchedAt;
       state.initialFetchComplete = true;
       state.syncError = synchronized.conflicts ? `${synchronized.conflicts} 个会话发生分叉，本地 head 已保留` : "";
       state.offline = false;
       state.conversations = synchronized.summaries;
       state.messageGraph = await listCachedMessages();
+      if (!ownsSync()) return;
       await restoreWorkspace(preferredConversationId);
+    } catch (error) {
+      if (!ownsSync()) return;
+      state.syncError = error instanceof Error ? error.message : "Backend 同步失败";
+      state.offline = !navigator.onLine;
+    } finally {
+      if (!ownsSync()) return;
+      state.backendSyncController = null;
       state.syncing = false;
       dependencies.renderApp();
       if (state.syncRequested) dependencies.scheduleRepositorySync();
-    } catch (error) {
-      state.authenticated = false;
-      state.syncing = false;
-      state.offline = !navigator.onLine;
-      state.syncError = error instanceof Error ? error.message : "Fetch failed";
-      dependencies.updateSyncIndicator();
-      if (state.syncRequested && navigator.onLine) dependencies.scheduleRepositorySync(1000);
     }
   }
 
-  return {initialize};
+  function waitForPairingPoll(delay: number, signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason || new DOMException("Pairing cancelled", "AbortError"));
+        return;
+      }
+      const aborted = () => {
+        window.clearTimeout(timer);
+        reject(signal.reason || new DOMException("Pairing cancelled", "AbortError"));
+      };
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener("abort", aborted);
+        resolve();
+      }, delay);
+      signal.addEventListener("abort", aborted, {once: true});
+    });
+  }
+
+  async function pairBackend() {
+    if (state.backendPairing || state.backendConnecting || !state.config) return;
+    let backendUrl: string;
+    try {
+      backendUrl = normalizeBackendUrl(state.backendUrl, window.location.href);
+    } catch (error) {
+      state.backendError = error instanceof Error ? error.message : "Backend URL 无效";
+      dependencies.renderApp();
+      return;
+    }
+
+    state.backendPairingWindow?.close();
+    const pairingWindow = window.open("about:blank", "turnfold-backend-pairing", "popup,width=720,height=720");
+    state.backendPairingWindow = pairingWindow;
+    state.backendPairingController?.abort();
+    const controller = new AbortController();
+    state.backendPairingController = controller;
+    const ownsPairing = () => state.backendPairingController === controller
+      && !controller.signal.aborted;
+    state.backendPairing = true;
+    state.backendPairingRequired = false;
+    state.backendError = "";
+    state.backendApprovalUrl = "";
+    dependencies.renderApp();
+
+    try {
+      const clientName = `Turnfold (${window.location.hostname || "browser"})`;
+      const pairing = await startBackendPairing(backendUrl, clientName, fetch, controller.signal);
+      if (!ownsPairing()) return;
+      const approvalUrl = backendApprovalUrl(backendUrl, pairing.pairingId);
+      state.backendApprovalUrl = approvalUrl;
+      if (pairingWindow) {
+        pairingWindow.opener = null;
+        pairingWindow.location.href = approvalUrl;
+      }
+      dependencies.renderApp();
+
+      while (ownsPairing()) {
+        const result = await pollBackendPairing(backendUrl, pairing, fetch, controller.signal);
+        if (!ownsPairing()) return;
+        if (result.status === "pending") {
+          await waitForPairingPoll(pairing.pollIntervalMs, controller.signal);
+          continue;
+        }
+        if (result.status === "denied") throw new Error("Backend 已拒绝本次配对");
+        if (result.status === "expired") throw new Error("Backend 配对请求已过期，请重新发起");
+        saveBackendGrant(window.localStorage, backendUrl, result.token, result.grant);
+        state.backendSavedGrant = true;
+        state.backendPairingController = null;
+        state.backendPairing = false;
+        state.backendPairingRequired = false;
+        state.backendApprovalUrl = "";
+        state.backendPairingWindow = null;
+        pairingWindow?.close();
+        dependencies.renderApp();
+        await connectBackend(backendUrl);
+        return;
+      }
+    } catch (error) {
+      if (!ownsPairing()) return;
+      state.backendPairingController = null;
+      state.backendPairing = false;
+      state.backendPairingRequired = true;
+      state.backendApprovalUrl = "";
+      state.backendPairingWindow = null;
+      pairingWindow?.close();
+      state.backendError = error instanceof Error ? error.message : "Backend 配对失败";
+      dependencies.renderApp();
+    }
+  }
+
+  async function revokeBackendPairing() {
+    if (state.backendConnecting || state.backendPairing || !state.config) return;
+    let backendUrl: string;
+    try {
+      backendUrl = normalizeBackendUrl(state.backendUrl, window.location.href);
+    } catch (error) {
+      state.backendError = error instanceof Error ? error.message : "Backend URL 无效";
+      dependencies.renderApp();
+      return;
+    }
+    const grantToken = backendGrantToken(window.localStorage, backendUrl);
+    if (!grantToken) {
+      state.backendSavedGrant = false;
+      state.backendError = "当前 Backend 没有可撤销的浏览器配对";
+      dependencies.renderApp();
+      return;
+    }
+    if (state.backendActiveUrl === backendUrl) disconnectBackend();
+    const controller = new AbortController();
+    state.backendConnectionController = controller;
+    state.backendConnecting = true;
+    state.backendError = "";
+    dependencies.renderApp();
+    try {
+      await revokeBackendGrant(backendUrl, grantToken, fetch, controller.signal);
+      if (state.backendConnectionController !== controller || controller.signal.aborted) return;
+      removeBackendGrant(window.localStorage, backendUrl);
+      state.backendSavedGrant = false;
+      state.backendPairingRequired = false;
+    } catch (error) {
+      if (state.backendConnectionController !== controller || controller.signal.aborted) return;
+      state.backendError = error instanceof Error ? error.message : "无法撤销 Backend 配对";
+    } finally {
+      if (state.backendConnectionController === controller) {
+        state.backendConnectionController = null;
+        state.backendConnecting = false;
+        dependencies.renderApp();
+      }
+    }
+  }
+
+  function updateBackendUrl(value: string) {
+    state.backendUrl = value;
+    state.backendError = "";
+    state.backendPairingRequired = false;
+    state.backendApprovalUrl = "";
+    try {
+      state.backendSavedGrant = Boolean(backendGrantToken(window.localStorage, normalizeBackendUrl(value, window.location.href)));
+    } catch {
+      state.backendSavedGrant = false;
+    }
+  }
+
+  function disconnectBackend() {
+    if (!state.config) return;
+    if (state.backendActiveTransport === "webdav") return;
+    window.clearTimeout(state.syncTimer);
+    state.backendConnectionController?.abort();
+    state.backendPairingController?.abort();
+    state.backendSyncController?.abort();
+    state.backendPairingWindow?.close();
+    state.backendConnectionController = null;
+    state.backendPairingController = null;
+    state.backendPairingWindow = null;
+    state.backendSyncController = null;
+    state.authenticated = false;
+    state.backendActiveUrl = "";
+    state.backendActiveTransport = "";
+    state.backendActiveGrantToken = "";
+    state.backendConnecting = false;
+    state.backendPairing = false;
+    state.backendPairingRequired = false;
+    state.backendApprovalUrl = "";
+    state.backendError = "";
+    state.syncing = false;
+    state.syncRequested = false;
+    state.initialFetchComplete = false;
+    state.syncError = "";
+    state.offline = !navigator.onLine;
+    state.config.profile = {...state.localProfile};
+    try {
+      state.backendSavedGrant = Boolean(backendGrantToken(window.localStorage, normalizeBackendUrl(state.backendUrl, window.location.href)));
+    } catch {
+      state.backendSavedGrant = false;
+    }
+    dependencies.renderApp();
+  }
+
+  return {
+    initialize,
+    connectBackend,
+    disconnectBackend,
+    pairBackend,
+    revokeBackendPairing,
+    updateBackendUrl
+  };
 }

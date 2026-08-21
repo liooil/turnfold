@@ -20,11 +20,13 @@ import {createMarkdownRenderer} from "./markdown-renderer";
 import {createMessageListView} from "./message-list-view";
 import {createModelSelection} from "./model-selection";
 import {createProviderController} from "./providers/provider-controller";
+import {createProviderAgentController} from "./providers/provider-agent-controller";
 import {createProviderStreaming} from "./provider-streaming";
 import {createSessionTransferController} from "./session-transfer-controller";
 import {createSettingsView} from "./settings-view";
 import {createSyncController} from "./sync-controller";
 import {createThreadView} from "./thread-view";
+import {createWebDavController} from "./webdav-controller";
 import {uuid} from "./uuid";
 import {updateAvatar} from "./avatar";
 import {isViewportAtBottom, scrollBottom} from "./viewport";
@@ -139,7 +141,10 @@ const draftActions = createDraftActions(state, {
   displayedMessages: selectors.displayedMessages,
   knownMessageMap: selectors.knownMessageMap,
   newestBranchTip: selectors.newestBranchTip,
-  syncComposerInputLayout: composerView.syncComposerInputLayout
+  syncComposerInputLayout: composerView.syncComposerInputLayout,
+  scheduleWorkingBackup: () => {
+    if (state.backendActiveTransport === "webdav") syncController.scheduleRepositorySync(500);
+  }
 });
 const conversationActions = createConversationActions(state, {
   renderApp,
@@ -181,6 +186,12 @@ const providerController = createProviderController(state, {
   discoverProvider: providerStreaming.discoverLocalProvider,
   reportError: showError
 });
+const providerAgentController = createProviderAgentController(state, {
+  render: renderApp,
+  localCredential: (providerId) => localCredential(state, providerId),
+  reportError: showError
+});
+providerAgentController.initialize();
 const sessionTransferController = createSessionTransferController(state, {
   root,
   escapeHtml,
@@ -201,10 +212,23 @@ const bootstrap = createBootstrap(state, {
   rememberModel: modelSelection.rememberModel,
   providerController: {openProviderEditor: providerController.openProviderEditor}
 });
+const webdavController = createWebDavController(state, {
+  render: renderApp,
+  disconnectNative: bootstrap.disconnectBackend,
+  synchronize: syncController.synchronizeRepository
+});
+webdavController.initialize();
 
 function scrollSettingsSection(id: string) {
   const section = root.querySelector<HTMLElement>(`#${CSS.escape(id)}`);
   section?.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+function openBackendSettings() {
+  state.settingsOpen = true;
+  state.modelQuery = "";
+  renderApp();
+  window.requestAnimationFrame(() => scrollSettingsSection("settings-backend"));
 }
 
 function chooseModel(providerId: string, model: string) {
@@ -255,6 +279,23 @@ function closeResponseTooltips(except?: HTMLElement) {
 
 root.addEventListener("submit", (event) => {
   if (!(event.target instanceof HTMLFormElement)) return;
+  if (event.target.matches("[data-backend-connection-form]")) {
+    event.preventDefault();
+    const input = event.target.elements.namedItem("backend-url");
+    if (input instanceof HTMLInputElement) {
+      if (state.backendActiveTransport === "webdav") webdavController.disconnect();
+      void bootstrap.connectBackend(input.value).catch(showError);
+    }
+    return;
+  }
+  if (webdavController.handleSubmit(event.target)) {
+    event.preventDefault();
+    return;
+  }
+  if (providerAgentController.handleSubmit(event.target)) {
+    event.preventDefault();
+    return;
+  }
   if (providerController.handleSubmit(event.target)) {
     event.preventDefault();
     return;
@@ -307,6 +348,12 @@ root.addEventListener("focusin", (event) => {
 
 root.addEventListener("input", (event) => {
   const target = event.target;
+  if (target instanceof HTMLInputElement && target.dataset.action === "backend-url") {
+    bootstrap.updateBackendUrl(target.value);
+    return;
+  }
+  if (webdavController.handleInput(target)) return;
+  if (providerAgentController.handleInput(target)) return;
   if (sessionTransferController.handleInput(target)) return;
   if (target instanceof HTMLTextAreaElement && target.name === "message") {
     composerView.syncComposerInputLayout(target);
@@ -334,6 +381,7 @@ root.addEventListener("input", (event) => {
 root.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+  if (webdavController.handleChange(target)) return;
   if (sessionTransferController.handleFileChange(target)) return;
   if (target.dataset.action === "advanced-actions" && target instanceof HTMLInputElement) {
     state.advancedActions = target.checked;
@@ -386,9 +434,22 @@ root.addEventListener("click", (event) => {
   const button = clickTarget?.closest<HTMLElement>("[data-action]");
   if (!button) return;
   const action = button.dataset.action;
+  if (providerAgentController.handleAction(button)) return;
+  if (webdavController.handleAction(button)) return;
   if (providerController.handleAction(button)) return;
   if (sessionTransferController.handleAction(button, event.target)) return;
   if (action === "open-settings") { state.settingsOpen = true; state.modelQuery = ""; renderApp(); }
+  if (action === "open-backend-settings") openBackendSettings();
+  if (action === "disconnect-backend") bootstrap.disconnectBackend();
+  if (action === "pair-backend") {
+    if (state.backendActiveTransport === "webdav") webdavController.disconnect();
+    void bootstrap.pairBackend().catch(showError);
+  }
+  if (action === "revoke-backend-pairing") {
+    if (state.backendActiveTransport === "webdav") webdavController.disconnect();
+    void bootstrap.revokeBackendPairing().catch(showError);
+  }
+  if (action === "sync-backend") void syncController.synchronizeRepository().then(renderApp).catch(showError);
   if (action === "close-settings") { state.settingsOpen = false; providerController.closeProviderEditor(); providerController.closeProviderModelEditor(); state.modelQuery = ""; renderApp(); }
   if (action === "scroll-settings-section" && button.dataset.id) scrollSettingsSection(button.dataset.id);
   if (action === "toggle-history") { state.historyOpen = !state.historyOpen; renderApp(); }

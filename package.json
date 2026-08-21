@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "build": "bun run typecheck && bun run build.ts",
     "build:pages": "bun run typecheck && bun run build-pages.ts",
+    "rust:check": "cargo check --workspace",
     "start": "NODE_ENV=production bun src/server.ts",
     "test": "bun test",
     "test:history": "bun run build && bun history.test.mjs"

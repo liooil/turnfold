@@ -77,6 +77,7 @@ async function api(origin, identity, pathname, init = {}) {
 const owner = {username: "sync-owner", sub: "owner-sub"};
 const other = {username: "sync-other", sub: "other-sub"};
 const repositoryId = "local:12345678-1234-4234-8234-123456789abc";
+const legacyRepositoryId = "8daac02ed9a886768394ae58c97a63b9";
 const generationSettings = {reasoning: "low", showReasoningSummary: false, temperature: null, maxOutputTokens: null};
 let server;
 
@@ -133,6 +134,7 @@ try {
   });
   assert.equal(fetched.response.status, 200);
   assert.equal(fetched.payload.objects[0].id, message.id);
+  assert.equal(fetched.payload.objectRepositoryIds[message.id], repositoryId);
   assert.equal(fetched.payload.refs[0].id, "sync-conversation");
   assert.equal(fetched.payload.refs[0].name, "sync conversation");
 
@@ -141,6 +143,35 @@ try {
     body: JSON.stringify({haveObjectIds: [message.id]})
   });
   assert.deepEqual(fetchedWithHave.payload.objects, []);
+  assert.deepEqual(fetchedWithHave.payload.objectRepositoryIds, {});
+
+  const legacyMessage = await createMessageObject({
+    parentMessageId: null,
+    role: "user",
+    parts: [{type: "text", text: "legacy"}],
+    origin: {type: "user"},
+    completion: {status: "complete"},
+    createdAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:00.000Z"
+  }, legacyRepositoryId);
+  assert.equal(legacyMessage.id, "sha256:f86d83b562076f230bfa0abaea9461cf46cd6c8f218eb845a1d7f43d5bbc7898");
+  const legacyPush = await api(server.origin, owner, "/api/sync/push", {
+    method: "POST",
+    body: JSON.stringify({
+      repositoryId,
+      objectRepositoryIds: {[legacyMessage.id]: legacyRepositoryId},
+      objects: [legacyMessage],
+      refs: []
+    })
+  });
+  assert.equal(legacyPush.response.status, 200);
+  assert.equal(legacyPush.payload.insertedObjects, 1);
+  const legacyFetch = await api(server.origin, owner, "/api/sync/fetch", {
+    method: "POST",
+    body: JSON.stringify({haveObjectIds: [message.id]})
+  });
+  assert.deepEqual(legacyFetch.payload.objects, [legacyMessage]);
+  assert.deepEqual(legacyFetch.payload.objectRepositoryIds, {[legacyMessage.id]: legacyRepositoryId});
 
   const alternateMessage = await createMessageObject({
     parentMessageId: null,
@@ -174,7 +205,7 @@ try {
   });
   assert.deepEqual(
     new Set(graphFetch.payload.objects.map((item) => item.id)),
-    new Set([message.id, alternateMessage.id])
+    new Set([message.id, legacyMessage.id, alternateMessage.id])
   );
 
   const noModelPush = await api(server.origin, owner, "/api/sync/push", {

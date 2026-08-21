@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {canonicalMessage, messageObjectId} from "./message-object.ts";
+import {canonicalMessage, messageObjectId, validRepositoryNamespace} from "./message-object.ts";
 
 describe("canonical message", () => {
   test("ignores object key insertion order", () => {
@@ -34,5 +34,11 @@ describe("canonical message", () => {
     };
     const id = await messageObjectId(message, "local:test");
     expect(id).toBe(await messageObjectId({...message, parts: [{text: "hello", type: "text"}]}, "local:test"));
+  });
+
+  test("accepts current and known legacy repository namespaces", () => {
+    expect(validRepositoryNamespace("local:12345678-1234-4234-8234-123456789abc")).toBe(true);
+    expect(validRepositoryNamespace("8daac02ed9a886768394ae58c97a63b9")).toBe(true);
+    expect(validRepositoryNamespace("legacy:unbounded")).toBe(false);
   });
 });

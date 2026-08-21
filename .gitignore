@@ -1,11 +1,15 @@
 node_modules/
+target/
 dist/
 docs/app/
 pages-dist/
 data/
 run/
+release/
 .env
 *.db
+*.db.lock
 *.db-shm
 *.db-wal
+*.vault.key
 .DS_Store

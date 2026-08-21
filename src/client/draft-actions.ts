@@ -14,6 +14,7 @@ type DraftActionDependencies = {
   knownMessageMap: () => Map<string, StoredChatMessage>;
   newestBranchTip: (startId: string) => string;
   syncComposerInputLayout: (input?: HTMLTextAreaElement | null) => void;
+  scheduleWorkingBackup?: () => void;
 };
 
 export function createDraftActions(state: AppState, dependencies: DraftActionDependencies) {
@@ -33,6 +34,7 @@ export function createDraftActions(state: AppState, dependencies: DraftActionDep
   async function persistWorkingItem(item: WorkingItem, render = false) {
     item.updatedAt = messageNow();
     await workingItemRepository.save(item);
+    dependencies.scheduleWorkingBackup?.();
     const index = state.workingItems.findIndex((candidate) => candidate.id === item.id);
     if (index >= 0) state.workingItems[index] = item;
     else state.workingItems.unshift(item);
@@ -43,6 +45,7 @@ export function createDraftActions(state: AppState, dependencies: DraftActionDep
     window.clearTimeout(state.workingSaveTimers.get(id));
     state.workingSaveTimers.delete(id);
     await workingItemRepository.remove(id);
+    dependencies.scheduleWorkingBackup?.();
   }
 
   function checkpointWorkingItem(item: WorkingItem) {

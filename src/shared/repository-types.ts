@@ -1,8 +1,9 @@
-import type {ConversationRefState, RepositoryFetch, RepositoryRefUpdate, StoredChatMessage} from "./conversation-types";
+import type {ConversationRefState, RepositoryFetch, RepositoryRefUpdate, StoredChatMessage, WorkingItem} from "./conversation-types";
 
 export type RepositoryPush = {
   repositoryId: string;
   objects: StoredChatMessage[];
+  objectRepositoryIds?: Record<string, string>;
   refs: RepositoryRefUpdate[];
 };
 
@@ -27,6 +28,12 @@ export type RepositoryPeerIdentity = {
   id: string;
   kind: "server" | "client";
   label?: string;
+};
+
+export type WorkingSnapshot = {
+  deviceId: string;
+  snapshotAt: string;
+  items: WorkingItem[];
 };
 
 export type PeerSyncState = {

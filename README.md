@@ -10,7 +10,7 @@ The provider must allow browser requests from the Pages origin. Local model serv
 
 Turnfold is a local-first repository for branching AI conversations.
 
-Messages are immutable content-addressed objects. A conversation is a lightweight ref to a current message, so edits and regenerated answers create alternatives instead of overwriting history. The browser renders from its local repository first and synchronizes in the background when a server identity is available.
+Messages are immutable content-addressed objects. A conversation is a lightweight ref to a current message, so edits and regenerated answers create alternatives instead of overwriting history. The browser renders from its local repository first. A Backend is used only after the user explicitly connects to its URL.
 
 > Turnfold is an early open-source release extracted from a working personal deployment. Storage and sync formats may still evolve before v1.
 
@@ -28,6 +28,7 @@ Messages are immutable content-addressed objects. A conversation is a lightweigh
 - Batch import from files, ZIP archives, or a read-only local directory.
 - Incremental Markdown and MathJax rendering designed for stable streaming layouts.
 - Installable PWA and a small Bun/SQLite synchronization server.
+- Explicit, URL-based Backend connections; serving the page never grants its Backend access to browser data.
 
 Turnfold currently models a message as having one parent. The result is a branching message history, not a general multi-parent DAG and not a Git implementation.
 
@@ -63,9 +64,38 @@ docker compose config
 
 The source dependency direction is `client -> shared <- server`. See [docs/architecture.md](docs/architecture.md) for the module and compatibility boundaries.
 
+The Rust executable, Backend consent model, Provider/Vault boundary, and WebDAV adapter are specified in [docs/local-service.md](docs/local-service.md).
+
 `bun run dev` starts Bun's fullstack dev server (`Bun.serve` with `development: true`). It serves `src/index.html` through Bun's HTML bundle and public/MathJax assets directly from source dependencies, so frontend changes hot reload without running `build` or `build:pages`.
 
 The development server listens on port `3000` by default. Set `PORT` to override it.
+
+The Rust runtime serves a production frontend and a SQLite synchronization Backend without implicitly connecting the frontend to it:
+
+```sh
+bun run build
+cargo run -p turnfold -- serve --listen 127.0.0.1:3000 --static-dir dist --database turnfold.db --vault-keyring default
+```
+
+Its capability endpoint is `/api/local/v1/info`. Repository sync is available only after the user explicitly connects either a native Backend or a WebDAV root; serving the page does not connect either transport. Cross-origin native sync and the Turnfold `/dav` front door use separate Origin-scoped grants (`repository.sync` and `repository.webdav`). Standard remote WebDAV roots can use Basic or no authentication and must provide browser-compatible CORS. Supplying `--vault-keyring` enables the separately paired Provider Agent and encrypted Vault without exposing plaintext credential resolution. `--vault-key-file` remains an explicit fallback, but the runtime never silently falls back between key sources. The Rust runtime defaults to loopback, `single-user` authentication, and `turnfold.db`.
+
+To move an existing key file into the OS keyring, stop the service and run the non-destructive migration below. Turnfold validates the key against the database and does not delete the source file:
+
+```sh
+turnfold vault migrate-key --database turnfold.db \
+  --from-key-file turnfold.vault.key --to-keyring default
+```
+
+Release archives contain `turnfold` (`turnfold.exe` on Windows), the built `dist/`, and a `service/` installer. Run `service/install-task.ps1` on Windows, `service/install-systemd-user.sh` on Linux, or `service/install-launchagent.sh` on macOS. The installers use a per-user OS keyring and service manager; their uninstall scripts remove supervision while preserving the database and keyring by default. A packaged executable finds the sibling `dist/` automatically.
+
+An optional root-mounted DAV listener is available for non-browser clients:
+
+```sh
+cargo run -p turnfold -- serve --webdav-listen 127.0.0.1:3001 \
+  --webdav-username turnfold --webdav-password-file webdav.password
+```
+
+It requires `single-user` mode and Basic authentication, rejects browser `Origin` requests, and is suitable over plain HTTP only on loopback. Run `turnfold serve --help` for all listener, database, Vault, and authentication options. The DAV namespace, ETag rules, and working-snapshot policy are documented in [docs/local-service.md](docs/local-service.md#repository-service-and-webdav).
 
 ## Configuration
 
@@ -79,8 +109,15 @@ The development server listens on port `3000` by default. Set `PORT` to override
 | `SINGLE_USER_NAME` | `local` | Display name used by single-user mode. |
 | `AUTH_ISSUER` | `turnfold:forward-auth` | Stable issuer identifier for forwarded identities. |
 | `PORTAL_URL` | empty | Optional compatible identity profile endpoint. |
+| `BACKEND_ALLOWED_ORIGINS` | empty | Comma-separated exact browser origins allowed to connect to this Bun Backend. |
 
 `forward-auth` accepts `X-Turnfold-Username` and `X-Turnfold-Sub`. Authentik's `X-Authentik-Username` and `X-Authentik-Uid` headers are also supported for compatibility. The reverse proxy must remove untrusted client-supplied identity headers before setting its own.
+
+The table describes the existing Bun/Docker deployment defaults. Rust accepts `CHAT_DATABASE_PATH`, `AUTH_MODE`, `SINGLE_USER_NAME`, and `AUTH_ISSUER`; its local defaults are `turnfold.db` and `single-user`, and its listen address is configured with `--listen`.
+
+Cross-origin Backend access is denied unless the page origin is listed exactly, for example `BACKEND_ALLOWED_ORIGINS=https://liooil.github.io`. Allowed responses use credentialed CORS with that exact origin; wildcard origins are rejected. Same-origin access and non-browser clients that omit `Origin` continue to work.
+
+The Rust Backend permits same-origin explicit connections and pairs cross-origin browsers through a separate Backend approval page. Grants contain only `repository.sync`, bind the exact page Origin and Backend identity, expire after 90 days, and can be revoked from Backend settings. Reverse-proxy deployments must declare their exact external origin with `--public-origin` and provide trusted HTTPS.
 
 Embedded Providers and their models are derived entirely from the embedded Models.dev subset; Turnfold adds only the protocol, authentication mode, and API endpoint required by its browser runtime. They contain no credentials and are all disabled by default. Simple setup can select an embedded or downloaded catalog Provider and enter its credential, or accept only a URL and key, detect the protocol and models, and derive the identifier and name from the page title or domain. Advanced setup retains the full identifier, protocol, authentication, endpoint, default-model, and header controls. Provider profiles, model overrides, custom profiles, discovered model lists, headers, and credentials are stored only in the current browser. Model and detection requests go directly from that browser to the configured endpoint; the Bun server is not involved. The Provider must therefore allow the Turnfold origin through CORS. Browsers may also ask for local-network access before reaching a LAN endpoint.
 
@@ -100,7 +137,8 @@ Then open <http://localhost:3000/turnfold/>.
 ## Data and compatibility
 
 - Browser data, Provider profiles, and credentials live in IndexedDB and remain usable without the server.
-- Signed-in/single-user refs and immutable objects synchronize to SQLite.
+- After an explicit Backend connection, refs and immutable objects synchronize to that Backend. No Backend is contacted automatically at startup.
+- After an explicit WebDAV connection, refs and immutable objects synchronize through the selected DAV root; the current device's working items are backed up as a recovery snapshot and are not merged into another device's active editor.
 - Full backups use `*.turnfold.json` with `type: "turnfold-archive"` and `version: 1`.
 - Native backups include message objects, conversation refs, and working drafts.
 

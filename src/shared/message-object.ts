@@ -1,5 +1,10 @@
 import type {StoredChatMessage} from "./conversation-types";
 
+export function validRepositoryNamespace(value: unknown): value is string {
+  return typeof value === "string"
+    && (/^local:[a-zA-Z0-9-]{8,160}$/.test(value) || /^[0-9a-f]{32}$/.test(value));
+}
+
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (!value || typeof value !== "object") return value;
