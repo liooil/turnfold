@@ -25,6 +25,10 @@ describe("source dependency boundaries", () => {
     expect(forbiddenImports("src/shared", ["/client/", "/server/"])).toEqual([]);
   });
 
+  test("shared code does not depend on Node built-ins (must run on all three implementations)", () => {
+    expect(forbiddenImports("src/shared", ["node:", "bun:"])).toEqual([]);
+  });
+
   test("client code does not depend on server code", () => {
     expect(forbiddenImports("src/client", ["/server/"])).toEqual([]);
   });

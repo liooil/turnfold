@@ -1,28 +1,9 @@
-import type {Conversation, ConversationSummary, StoredChatMessage, WorkingItem} from "../../shared/conversation-types";
-import type {GenerationSettings} from "../../shared/generation-settings";
+import type {Conversation, ConversationSummary, WorkingItem} from "../../shared/conversation-types";
 import type {PeerSyncState, RepositoryInventory, RepositoryPull, RepositoryPush, RepositoryPushRefResult} from "../../shared/repository-types";
 
-export type CreateConversationInput = {
-  providerId: string;
-  model: string;
-  generationSettings: GenerationSettings;
-  name: string;
-  headMessageId?: string | null;
-  messages?: StoredChatMessage[];
-};
-
-export type UpdateConversationInput = {
-  providerId: string;
-  model: string;
-  generationSettings: GenerationSettings;
-  name?: string;
-};
-
-export type CommitMessageInput = {
-  conversationId: string;
-  expectedHeadId: string | null;
-  message: StoredChatMessage;
-};
+import type {CommitMessageInput, CreateConversationInput, UpdateConversationInput} from "../../shared/repository-ops";
+// 契约输入类型统一来自 shared（三端同语义）：本文件保留组合根的接口落地形态。
+export type {CommitMessageInput, CreateConversationInput, UpdateConversationInput} from "../../shared/repository-ops";
 
 export interface ConversationRepository {
   list(): Promise<ConversationSummary[]>;

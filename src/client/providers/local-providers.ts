@@ -1,14 +1,8 @@
-import type {ProviderProfile, ProviderSecret} from "../../shared/provider-types";
 import {withEmbeddedProviderModels} from "./embedded-providers";
 
-export type LocalCredential = {
-  id: string;
-  providerId: string;
-  name: string;
-  secret: ProviderSecret;
-  createdAt: string;
-  updatedAt: string;
-};
+import type {LocalCredential, ProviderProfile, ProviderSecret} from "../../shared/provider-types";
+// LocalCredential 类型定义已提升到 shared/provider-types.ts（三端同语义）。
+export type {LocalCredential} from "../../shared/provider-types";
 
 const databaseName = "turnfold-local-vault";
 const databaseVersion = 2;

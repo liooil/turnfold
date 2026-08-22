@@ -46,6 +46,16 @@ export type ProviderSecret = {
   headers?: Record<string, string>;
 };
 
+/** 本地存储的凭据实体（仓库对象；写入哪个 Storage 由信任模型决定）。 */
+export type LocalCredential = {
+  id: string;
+  providerId: string;
+  name: string;
+  secret: ProviderSecret;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ProviderMessage = {
   role: "system" | "user" | "assistant";
   text: string;
