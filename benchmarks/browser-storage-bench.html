@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>storage bench</title>
+<pre id="out">running…</pre>
+<script type="module">
+const out = document.getElementById("out");
+const log = (s) => { out.textContent += s + "\n"; };
+const sampleSmall = JSON.stringify({id: "sha256:ab", parentMessageId: "sha256:cd", role: "assistant", parts: [{type: "text", text: "x".repeat(4000)}], origin: {type: "model"}, completion: {status: "complete"}, createdAt: "2026-08-22T10:00:00.000Z", completedAt: "2026-08-22T10:00:00.000Z"});
+const sampleBig = JSON.stringify({type: "image", data: "A".repeat(1_000_000), mimeType: "image/png"});
+
+function bench(name, n, fn) {
+  return (async () => {
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) await fn(i);
+    const dt = performance.now() - t0;
+    log(`${name}: ${(dt / n).toFixed(3)} ms/op (n=${n}), ${Math.round((n / dt) * 1000)} ops/s`);
+  })();
+}
+
+// ---------- IndexedDB ----------
+const IDB_NAME = "bench-idb";
+const idb = await new Promise((res) => {
+  const req = indexedDB.open(IDB_NAME, 1);
+  req.onupgradeneeded = () => req.result.createObjectStore("objects");
+  req.onsuccess = () => res(req.result);
+});
+const idbTx = (mode, fn) => new Promise((res, rej) => {
+  const tx = idb.transaction("objects", mode);
+  tx.oncomplete = () => res();
+  tx.onerror = () => rej(tx.error);
+  fn(tx.objectStore("objects"));
+});
+const idbPut = (key, value) => new Promise((res, rej) => {
+  const tx = idb.transaction("objects", "readwrite");
+  tx.objectStore("objects").put(value, key);
+  tx.oncomplete = res;
+  tx.onerror = () => rej(tx.error);
+});
+const idbGet = (key) => new Promise((res, rej) => {
+  const tx = idb.transaction("objects", "readonly");
+  const r = tx.objectStore("objects").get(key);
+  r.onsuccess = () => res(r.result);
+  tx.onerror = () => rej(tx.error);
+});
+
+await bench("IDB 写 5KB (每 op 一事务)", 200, (i) => idbPut(`o${i}`, sampleSmall));
+await bench("IDB 写 5KB (单事务批量100次)", 5, async (b) => {
+  const tx = idb.transaction("objects", "readwrite");
+  const store = tx.objectStore("objects");
+  for (let i = 0; i < 100; i++) store.put(sampleSmall, `b${b}-${i}`);
+  await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+});
+await bench("IDB 读 5KB 单对象", 500, (i) => idbGet(`o${i % 200}`));
+await bench("IDB 批量 get 200 (单事务并行)", 5, async () => {
+  const tx = idb.transaction("objects", "readonly");
+  const store = tx.objectStore("objects");
+  const rs = [];
+  for (let i = 0; i < 200; i++) rs.push(new Promise((res, rej) => {
+    const r = store.get(`o${i}`);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+  await Promise.all(rs);
+});
+await bench("IDB 写 1MB", 20, (i) => idbPut(`big${i}`, sampleBig));
+await bench("IDB 读 1MB", 50, (i) => idbGet(`big${i % 20}`));
+
+// ---------- OPFS / FileSystem API ----------
+const rootDir = await navigator.storage.getDirectory();
+const objectsDir = await rootDir.getDirectoryHandle("objects", {create: true});
+const tmpDir = await rootDir.getDirectoryHandle("tmp", {create: true});
+
+async function opfsWrite(name, data) {
+  const fh = await tmpDir.getFileHandle(`t-${name}`, {create: true});
+  const w = await fh.createWritable();
+  await w.write(data);
+  await w.close();
+  const dest = await objectsDir.getFileHandle(name, {create: true});
+  const w2 = await dest.createWritable();
+  await w2.write(data);
+  await w2.close();
+  await tmpDir.removeEntry(`t-${name}`).catch(() => {});
+}
+async function opfsRead(name) {
+  const fh = await objectsDir.getFileHandle(name);
+  const file = await fh.getFile();
+  return file.text();
+}
+
+await bench("FS 写 5KB (createWritable+close)", 100, (i) => opfsWrite(`o${i}`, sampleSmall));
+await bench("FS 批量写 100 文件", 2, async () => {
+  for (let i = 0; i < 100; i++) await opfsWrite(`w${i}`, sampleSmall);
+});
+await bench("FS 读 5KB 单对象", 300, (i) => opfsRead(`o${i % 100}`));
+await bench("FS 批量读 100 文件", 3, async () => {
+  for (let i = 0; i < 100; i++) await opfsRead(`o${i}`);
+});
+await bench("FS 写 1MB", 20, (i) => opfsWrite(`big${i}`, sampleBig));
+await bench("FS 读 1MB", 50, (i) => opfsRead(`big${i % 20}`));
+log("DONE");
+</script>
